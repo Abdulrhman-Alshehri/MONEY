@@ -1,0 +1,10 @@
+# Personal financial data and secrets must never reach this public repo
+*.pdf
+*.tsv
+*.csv
+*.xlsx
+snapshot*.json
+rows_*
+page1_*
+.env
+.env.*
