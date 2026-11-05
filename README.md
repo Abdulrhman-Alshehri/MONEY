@@ -58,52 +58,47 @@ Why it's built this way:
 
 ## Using the dashboard
 
-### Filters
+Three tabs: **Home**, **Payments** and **Months**. Months are calendar months in Riyadh time, and "today" is the real date.
 
-Filters are in the row at the top and apply to everything on the page, except where noted below.
+### Home
 
-| Filter | Options |
+| Part | What it shows |
 |---|---|
-| Period | All time, last 7, 30 or 90 days, or a single month |
-| Category | Any category in use, plus the defaults |
-| Method | Apple Pay / in store, online, international, transfer, bank, ATM |
-| City | Cities in your data |
-| Search | Part of a merchant name |
-| Min SAR | Hides smaller payments |
-| Transfers | Without transfers (default), or count money you send as spending |
+| Month name, ‹ › | The month you're looking at. It opens on the current month |
+| Spent | Spending in that month, so far for the current month |
+| Comparison | Against the month before, up to the same day: ▲ more, ▼ less, or "about the same" when the difference is under 100 SAR or 5%. **Hidden when either month is missing days**, because missing SMS would look like saving |
+| Warning | Missing days next to the total, or "Last payment was …" when nothing has arrived for 3 days |
+| Chart | This month's running total (blue) against last month's (grey) |
+| Heads-up | At most one, current month only: a category far above its usual pace, or fixed costs due in the next 7 days |
+| Where it went | Top 4 categories plus Other. Tap one to see its payments |
+| Latest or Biggest | The last 5 payments for the current month, or the 5 biggest for a past month. Tap one to edit it |
 
-Tapping a bar under category, merchant, method or city applies that filter. Active filters appear as chips; tap a chip to remove it.
+### Payments
 
-"Last 7/30/90 days" counts back from your **latest payment**, not from today.
+Every payment, newest first, grouped by day. Search matches the merchant, category, note or amount. Opened from a category or "See all", it's filtered to that month; tap the chip to clear it. Tap a payment to edit it.
 
-### What's on the page
+### Months
 
-| Section | What it shows |
+| Part | What it shows |
 |---|---|
-| Data gap warning | Any stretch of more than 5 days with no payments, across all your data |
-| Spent | Spending after refunds |
-| Money in | Salary, deposits and transfers received |
-| Average per day | Spent divided by days from the first to the last payment shown |
-| Last known balance | The newest statement balance. **It ignores filters, and SMS has no balance, so it can be out of date** |
-| What stands out | Top category, most visited merchant, small payments, largest payment, lowest balance |
-| Spending over time | Per day, or per week when the period is over 45 days |
-| By category, Top merchants | Ranked bars with SAR amounts |
-| Balance | Balance line from statements. Follows the period filter only; the dot marks the lowest point |
-| When I spend | Heatmap by weekday and hour |
-| Each month | Spent, money in and net. Months with missing days are partial |
-| Payment method, City | Ranked bars |
-| Looks recurring | The same merchant and amount, 26 to 35 days apart |
-| Payments | The list. Tap a payment to edit it |
+| Usual month | Average of the last 3 complete months |
+| Bars | Spending per month for the last 12 months. "so far" is the current month; "partial" means days are missing. Tap one to open it on Home |
+| Every month | Fixed costs: the same merchant and amount about once a month, on about the same day |
+| Balance | From bank statements only, so it ends at the latest statement |
 
 ### Editing a payment
 
-Tap a payment in the list to:
+Tap a payment to:
 
 - **Change its category**, or choose "New category..." to create one.
-- **Apply it to the merchant** with "Use for all...". This changes that merchant's past payments and saves a rule for new SMS.
+- **Apply it to all of them** with "Use for all...": every payment from that merchant, or every transfer with that person. This changes past payments and saves a rule for new SMS.
 - **Add a note.**
-- **Leave it out of totals**, for things like a duplicate you want to keep or money that isn't really spending.
+- **Not count it**, for things like a duplicate you want to keep.
 - **Delete it.** This is permanent, and it's asked to be confirmed first.
+
+### Rent paid by transfer
+
+Transfers don't count as spending until they have a category. To count rent: tap the rent transfer, choose **Rent & Housing**, tick **Use for all transfers with this person**, and save. Past rent changes at once, and new rent SMS get the category automatically.
 
 ## How money is counted
 
@@ -114,16 +109,16 @@ Each payment has a `kind`:
 | `purchase` | Card, Apple Pay, online or international payment | Adds to Spent |
 | `fee` | Transfer fee and its VAT | Adds to Spent |
 | `refund` | Refund or reversal | Subtracts from Spent |
-| `transfer_out` | Money sent to a person | Only adds to Spent with "Count transfers" on |
-| `income` | Salary and government support | Adds to Money in |
-| `cash_in` | ATM cash deposit | Adds to Money in |
-| `transfer_in` | Money received from a person | Adds to Money in |
+| `transfer_out` | Money sent to a person | Adds to Spent once its category isn't Transfers, for example Rent & Housing |
+| `income` | Salary and government support | Not spending |
+| `cash_in` | ATM cash deposit | Not spending |
+| `transfer_in` | Money received from a person | Not spending |
 | `unknown` | SMS that wasn't recognized | Left out until you review it |
 
 Things to keep in mind:
 
-- Money in includes transfers from friends, and those can be repayments. It isn't the same as income.
-- Payments you mark "Leave out of my totals" count nowhere, but stay in the list.
+- Transfers to friends and family stay out of Spent unless you give them a category.
+- Payments you mark "Don't count this payment" count nowhere, but stay in the list.
 
 ## Set up from scratch
 
@@ -214,7 +209,9 @@ Change it in all three places:
 | Same payment twice | A test message sent again | Tap it and delete it |
 | Old dashboard after an update | Netlify isn't updated, or the old page is still open | Check the Deploys page, then fully close and reopen the app |
 | Dashboard keeps asking for the token | Wrong or changed token | Enter the current token |
-| Old payments disappear | Row limit reached | See Limitations |
+| Old payments disappear | The deployed function is older than `index.ts` and stops at 1000 rows | Redeploy `sms-ingest` |
+| Rent isn't in Spent | The rent transfer is still in Transfers | See "Rent paid by transfer" |
+| Home says the last payment was days ago | The Shortcut stopped sending | Check the automation, then import a statement for the missing days |
 | Project not responding | Free Supabase projects pause when inactive | Restore it in the Supabase dashboard |
 
 ## Security and privacy
@@ -229,7 +226,8 @@ Change it in all three places:
 
 ## Limitations
 
-- **Row limit:** the API asks for 5000 rows, but Supabase's default limit is 1000 unless the project setting was changed. Past that, the oldest payments silently stop appearing, which also makes totals wrong. Fix this before reaching 1000 payments.
+- **Fixed costs** must repeat with exactly the same amount, so a phone bill that changes every month isn't listed under Every month.
+- **Rent across a month boundary:** paying on the 31st instead of the 1st puts two rents in one month, and the comparison jumps by that amount.
 - **One account:** built for one person, one SNB account and SAR.
 - **SMS formats:** only online purchase, POS purchase and outgoing transfer messages have been checked against real SMS.
 - **Shop names:** statements often have location labels or no shop name for online purchases, so some merchants are generic until renamed in a future version.

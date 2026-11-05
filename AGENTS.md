@@ -63,7 +63,7 @@ Body: JSON array of rows with the `payments` columns. Rows whose `ref` already e
 
 ### GET: list payments
 
-Returns an array, newest `occurred_at` first, without `raw_text` or `ref`. Rows with no `occurred_at` come last.
+Returns every payment as an array, without `raw_text` or `ref`. Supabase caps each request at 1000 rows, so `readAll()` reads in pages with `.range()`. Rows come in insert order (`created_at`, then `id`), so a payment arriving mid-read can't shift a page. The dashboard sorts for itself.
 
 ### PATCH ?id=uuid: edit a payment
 
@@ -113,7 +113,7 @@ Neither has a database constraint, so new values won't error. The frontend must 
 
 ### merchant_rules
 
-`merchant_key` (primary key, from `merchantKey()`: lowercase, single spaces, trimmed), `category`, `updated_at`. Read when an SMS is ingested and written by PATCH. Statement imports don't use it.
+`merchant_key` (primary key, from `merchantKey()`: lowercase, single spaces, trimmed), `category`, `updated_at`. Read when an SMS is ingested, for purchases and outgoing transfers, and written by PATCH. Statement imports don't use it.
 
 ## SMS pipeline
 
@@ -154,10 +154,11 @@ Logical text with line breaks flattened. The phone can display these differently
 
 ### Category order
 
-1. Fixed: transfers to `Transfers`, income to `Income`, cash to `Cash deposit`.
-2. `merchant_rules` exact match on the normalized merchant.
-3. `KEYWORDS` regex list in `index.ts`.
-4. `Uncategorized`.
+1. Fixed: money received (`transfer_in`) to `Transfers`, income to `Income`, cash to `Cash deposit`.
+2. `merchant_rules` exact match on the normalized merchant. This includes outgoing transfers, so a landlord marked once as `Rent & Housing` stays that way and counts as spending.
+3. Outgoing transfers with no rule: `Transfers`, which the dashboard doesn't count as spending.
+4. `KEYWORDS` regex list in `index.ts`, for everything else.
+5. `Uncategorized`.
 
 ### Duplicates
 
@@ -288,20 +289,24 @@ Everything is in `index.html`.
 
 | Function | Job |
 |---|---|
-| `load()` | Fetch data, add `_d` (Riyadh time as a Date; read with `getUTC*`) and `_k` (`yyyy-mm-dd`) |
-| `filtered()`, `inPeriod()` | Apply filters; `inPeriod` is period only |
-| `spend(p)` | **The single definition of what counts as spending** |
-| `isIn(p)` | The single definition of money in |
-| `group()`, `bars()` | Totals and ranked bars. Groups with a net of zero or less are hidden |
-| `timeChart()`, `balChart()`, `heat()` | SVG and grid charts |
-| `months()`, `recurring()`, `insights()`, `gaps()`, `chips()`, `txList()` | The other sections |
-| `render()` | Redraws everything from `data`; called on every filter change |
-| `edit()` and the `dSave`, `dDel` handlers | Edit dialog and API calls |
+| `load()` | Fetch data and add `_d` (Riyadh time as a Date; read with `getUTC*`). Runs again when the app comes back from the background |
+| `spend(p)` | **The single definition of what counts as spending.** Transfers out count once their category isn't `Transfers` |
+| `render()` | Shows the active tab: `renderHome()`, `renderPay()` or `renderMonths()` |
+| `totals()`, `cumulative()` | Category totals and running totals by day, both from `spend()` |
+| `paceChart()`, `balChart()` | SVG charts: this month against last month, and the statement balance |
+| `gaps()`, `partial()` | Runs of 5+ days with no payments, used for warnings and "partial" months |
+| `fixedCosts()` | Same merchant and amount about once a month on about the same day; feeds Every month and "Due this week" |
+| `overUsual()`, `dueSoon()` | The single heads-up on Home |
+| `edit()` and the `dSave`, `dDel` handlers | Edit sheet and API calls |
 
 ### Conventions
 
-- All charts must use `spend()` and `isIn()`, so numbers always agree.
-- Every chart follows the filters except the data gap warning and last known balance (all data) and the balance chart (period only), because a balance filtered by category is meaningless.
+- Every total and chart uses `spend()`, so numbers always agree.
+- Calendar months in Riyadh time. "Today" is the real date, not the latest payment.
+- Each number needs something to compare with: Home compares with last month up to the same day. Differences under 100 SAR or 5% read "about the same", and there's no ▲/▼ verdict when either month is missing days.
+- Missing days are shown next to the total they affect (project rule).
+- Keep Home short: one heads-up at most, top 4 categories, 5 payments. Other detail belongs in Payments or Months.
+- Text: 17px base and nothing under 13px. Whole riyals in lists, exact amounts in the edit sheet.
 - Escape all data with `esc()` before `innerHTML`, or use `textContent`. Merchant names come from SMS and are untrusted.
 - Dark and light themes use CSS variables, following the phone's setting.
 - Charts: one color per chart, thin bars with rounded ends, hairline grids, no dual axes, values in text colors. Categories aren't given separate colors, so more categories never need new hues.
@@ -313,7 +318,7 @@ On `localhost`, `API` becomes `/api`, so you can test without touching real data
 
 - Write a small local server that serves this folder and answers `/api` with a data snapshot. Keep both **outside this folder**.
 - That switch only applies on `localhost`. Never make the API URL configurable by URL parameter, because a malicious link could then capture the token.
-- Check at 375px wide, since this is a phone app. Test that nothing overflows.
+- Check at 375px and 320px wide, in light and dark, since this is a phone app. Test that nothing overflows.
 
 ### Service worker
 
@@ -340,14 +345,14 @@ Invoke-RestMethod -Method Post -Uri $env:SMS_URL -Headers @{"x-api-key"=$env:APP
 
 | Issue | Impact | Suggested fix |
 |---|---|---|
-| Supabase returns 1000 rows by default, despite `.limit(5000)` | Past 1000 payments, older rows vanish from the dashboard and totals go wrong. The import's `ref` check has the same cap, so it would fail on the unique index | Page with `.range()`, or raise the project's max rows |
 | No SMS and statement matching | Double counting if periods overlap | Match on minute and amount during import |
 | One shared token, no rate limiting | A weak token can be guessed | Long random token; consider real auth |
 | Generic statement merchant names | Weak merchant ranking | Add a merchant rename feature with an alias table |
-| Statement imports don't apply `merchant_rules` | User rules aren't used for later imports | Apply rules in `?action=import` |
+| Statement imports don't apply `merchant_rules` | User rules aren't used for later imports; rent paid by transfer arrives as `Transfers` and must be marked again | Apply rules in `?action=import` |
 | `apply_to_merchant` only matches exact merchant text | Spelling variants stay unchanged | Compare using `merchantKey()` |
 | No in-app review list for `unknown` rows | Unrecognized SMS sit in the list, dimmed | Add a review filter |
-| Filters use the latest payment as "today" | "Last 7 days" can be old if data stopped | Consider using the real date |
+| Fixed costs need an identical amount | A bill that changes each month isn't listed under Every month or "Due this week" | Group by merchant with a tolerance |
+| Rent across a month boundary | Paid on the 31st instead of the 1st, one month has two rents and the comparison jumps | Compare without fixed costs |
 | Statement and SMS amounts assume SAR | Foreign amounts rely on the bank's conversion | Fine unless SMS formats differ |
 | `tools/` is Windows-only | Other systems can't run imports | Port if needed |
 
@@ -363,7 +368,7 @@ Invoke-RestMethod -Method Post -Uri $env:SMS_URL -Headers @{"x-api-key"=$env:APP
 ## Checklist before finishing a change
 
 - [ ] No secrets or personal data in the diff
-- [ ] `spend()` and `isIn()` are still the only definitions of the totals
+- [ ] `spend()` is still the only definition of spending
 - [ ] Tested at phone width
 - [ ] Test rows removed from the live database
 - [ ] Deployed function matches the repo

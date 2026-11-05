@@ -53,13 +53,34 @@ function parse(t: string) {
 }
 
 async function categorize(kind: string, merchant: string | null) {
-  if (kind === 'transfer_in' || kind === 'transfer_out') return 'Transfers';
+  if (kind === 'transfer_in') return 'Transfers';
   if (kind === 'income') return 'Income';
   if (kind === 'cash_in') return 'Cash deposit';
-  const { data } = await db.from('merchant_rules').select('category').eq('merchant_key', merchantKey(merchant)).maybeSingle();
-  if (data) return data.category;
+  // User rules come first, so a person marked once (the landlord as Rent & Housing) stays that way.
+  if (merchant) {
+    const { data } = await db.from('merchant_rules').select('category').eq('merchant_key', merchantKey(merchant)).maybeSingle();
+    if (data) return data.category;
+  }
+  if (kind === 'transfer_out') return 'Transfers';
   for (const [re, c] of KEYWORDS) if (merchant && re.test(merchant)) return c;
   return 'Uncategorized';
+}
+
+const PAGE = 1000; // Supabase returns at most 1000 rows per request unless the project setting says otherwise
+
+// Reads every page of a query. `query` must build a fresh query with a stable order each call.
+// Pages advance by the rows actually received, so a lower server cap still reads everything.
+// deno-lint-ignore no-explicit-any
+async function readAll(query: () => any): Promise<{ data: any[]; error: { message: string } | null }> {
+  // deno-lint-ignore no-explicit-any
+  const rows: any[] = [];
+  for (let i = 0; i < 1000; i++) {
+    const { data, error } = await query().range(rows.length, rows.length + PAGE - 1);
+    if (error) return { data: rows, error };
+    if (!data?.length) return { data: rows, error: null };
+    rows.push(...data);
+  }
+  return { data: rows, error: { message: 'too many rows' } };
 }
 
 Deno.serve(async (req) => {
@@ -71,7 +92,8 @@ Deno.serve(async (req) => {
   const id = url.searchParams.get('id');
 
   if (req.method === 'GET') {
-    const { data, error } = await db.from('payments').select('id,amount,currency,merchant,type,kind,category,city,mcc,balance,source,seq,note,excluded,occurred_at,created_at').order('occurred_at', { ascending: false, nullsFirst: false }).limit(5000);
+    // Insert order, so a payment that arrives during the read lands on the last page instead of shifting the others
+    const { data, error } = await readAll(() => db.from('payments').select('id,amount,currency,merchant,type,kind,category,city,mcc,balance,source,seq,note,excluded,occurred_at,created_at').order('created_at').order('id'));
     return error ? json({ error: error.message }, 500) : json(data);
   }
 
@@ -99,7 +121,7 @@ Deno.serve(async (req) => {
 
   if (req.method === 'POST' && action === 'import') {
     const rows = await req.json();
-    const { data: have, error: e } = await db.from('payments').select('ref').not('ref', 'is', null);
+    const { data: have, error: e } = await readAll(() => db.from('payments').select('ref').not('ref', 'is', null).order('ref'));
     if (e) return json({ error: e.message }, 500);
     const seen = new Set((have ?? []).map((r) => r.ref));
     const fresh = rows.filter((r: { ref: string }) => !seen.has(r.ref));
