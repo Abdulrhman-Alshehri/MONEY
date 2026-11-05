@@ -11,8 +11,8 @@
 <link rel="apple-touch-icon" href="icon.svg">
 <title>Spending</title>
 <style>
-:root{color-scheme:dark;--page:#0d0d0d;--sheet:#1a1a19;--card:#1f1f1e;--fg:#f0efec;--fg2:#c3c2b7;--mut:#898781;--grid:#2c2c2a;--axis:#383835;--ring:rgba(255,255,255,.1);--acc:#3987e5;--ctx:#6b6a65;--good:#0ca30c;--bad:#e66767;--warn:#fab219;--bar:rgba(13,13,13,.94)}
-@media (prefers-color-scheme:light){:root{color-scheme:light;--page:#f9f9f7;--sheet:#fcfcfb;--card:#efeee9;--fg:#0b0b0b;--fg2:#52514e;--mut:#6b6a65;--grid:#e1e0d9;--axis:#c3c2b7;--ring:rgba(11,11,11,.1);--acc:#2a78d6;--ctx:#b0afa8;--good:#006300;--bad:#d03b3b;--bar:rgba(249,249,247,.94)}}
+:root{color-scheme:dark;--page:#0d0d0d;--sheet:#1a1a19;--card:#1f1f1e;--fg:#f0efec;--fg2:#c3c2b7;--mut:#898781;--grid:#2c2c2a;--axis:#383835;--ring:rgba(255,255,255,.1);--acc:#3987e5;--ctx:#6b6a65;--good:#0ca30c;--bad:#e66767;--warn:#fab219;--seg:#3a3a38}
+@media (prefers-color-scheme:light){:root{color-scheme:light;--page:#f9f9f7;--sheet:#fcfcfb;--card:#efeee9;--fg:#0b0b0b;--fg2:#52514e;--mut:#6b6a65;--grid:#e1e0d9;--axis:#c3c2b7;--ring:rgba(11,11,11,.1);--acc:#2a78d6;--ctx:#b0afa8;--good:#006300;--bad:#d03b3b;--seg:#ffffff}}
 *{box-sizing:border-box}[hidden]{display:none!important}
 html{-webkit-text-size-adjust:100%}
 body{margin:0 auto;max-width:560px;background:var(--page);color:var(--fg);font:17px/1.35 system-ui,-apple-system,"Segoe UI",sans-serif;padding:calc(env(safe-area-inset-top) + 6px) 16px calc(env(safe-area-inset-bottom) + 96px)}
@@ -20,7 +20,7 @@ button,input,select{font:inherit;color:inherit}
 button{background:none;border:0;padding:0;cursor:pointer;text-align:left}
 p{margin:0}
 .ico{width:18px;height:18px;flex:none;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
-.top{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:44px;margin:10px 0 20px}
+.top{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:44px;margin:18px 0 20px}
 h1{font-size:28px;font-weight:700;margin:0}
 h2{display:flex;justify-content:space-between;align-items:baseline;gap:12px;font-size:20px;font-weight:600;margin:30px 0 6px}
 .nav{display:flex;gap:8px}
@@ -72,10 +72,10 @@ select:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-of
 .btn.primary{background:var(--acc);color:#fff;font-weight:600}
 .btn:disabled{opacity:.5}
 .err{color:var(--bad);font-size:15px;margin-top:10px}
-nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:10;display:flex;justify-content:center;padding:8px 8px calc(env(safe-area-inset-bottom) + 8px);background:var(--bar);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);border-top:1px solid var(--grid)}
-nav.tabs button{flex:1;max-width:160px;display:flex;flex-direction:column;align-items:center;gap:3px;padding:4px 0;font-size:13px;color:var(--mut)}
-nav.tabs button[aria-current]{color:var(--acc)}
-nav.tabs .ico{width:24px;height:24px;stroke-width:2}
+/* Tabs sit at the top: Netlify's free plan pins a badge over the bottom-right corner that can't be hidden */
+nav.tabs{display:flex;gap:4px;margin-top:8px;padding:4px;border-radius:12px;background:var(--card)}
+nav.tabs button{flex:1;padding:8px 0;border-radius:9px;text-align:center;font-size:15px;font-weight:500;color:var(--fg2)}
+nav.tabs button[aria-current]{background:var(--seg);color:var(--fg);font-weight:600}
 dialog{width:min(440px,calc(100vw - 24px));padding:20px;border:0;border-radius:20px;background:var(--sheet);color:var(--fg)}
 dialog::backdrop{background:rgba(0,0,0,.55)}
 dialog h3{font-size:22px;margin:0;overflow-wrap:anywhere}
@@ -103,6 +103,12 @@ dialog .chk{display:flex;gap:10px;align-items:center;font-size:17px;color:var(--
   <button class="btn primary" id="go">Open</button>
   <div class="err" id="err"></div>
 </div>
+
+<nav class="tabs" id="tabs" hidden>
+  <button data-tab="home" id="tHome">Home</button>
+  <button data-tab="pay" id="tPay">Payments</button>
+  <button data-tab="months" id="tMonths">Months</button>
+</nav>
 
 <main id="app" hidden>
   <section id="home">
@@ -143,12 +149,6 @@ dialog .chk{display:flex;gap:10px;align-items:center;font-size:17px;color:var(--
   </section>
 </main>
 
-<nav class="tabs" id="tabs" hidden>
-  <button data-tab="home" id="tHome">Home</button>
-  <button data-tab="pay" id="tPay">Payments</button>
-  <button data-tab="months" id="tMonths">Months</button>
-</nav>
-
 <dialog id="dlg">
   <h3 id="dM"></h3>
   <div class="label" id="dS" style="margin-top:4px"></div>
@@ -175,7 +175,6 @@ const INCOMING = ['refund', 'income', 'cash_in', 'transfer_in'];
 const ICONS = {
   prev: '<path d="M15 5l-7 7 7 7"/>', next: '<path d="M9 5l7 7-7 7"/>', down: '<path d="M5 9l7 7 7-7"/>', x: '<path d="M6 6l12 12M18 6L6 18"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>', warn: '<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17h.01"/>',
-  home: '<path d="M4 11l8-7 8 7v9a1 1 0 0 1-1 1h-5v-6h-4v6H5a1 1 0 0 1-1-1z"/>', list: '<path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/>', bars: '<path d="M5 20v-8M10 20V6M15 20v-9M20 20V4"/>',
 };
 let data = [], tab = 'home', vy = 0, vm = 0, showAllCats = false, pFilter = null, shown = 60, cur = null, loadedAt = 0, fixedCache = null, dayCache = null;
 
@@ -523,7 +522,6 @@ $('dDel').onclick = async () => {
 
 // ---------- wiring ----------
 $('hPrev').innerHTML = icon('prev'); $('hNext').innerHTML = icon('next');
-$('tHome').insertAdjacentHTML('afterbegin', icon('home')); $('tPay').insertAdjacentHTML('afterbegin', icon('list')); $('tMonths').insertAdjacentHTML('afterbegin', icon('bars'));
 const moveMonth = k => { const m = vy * 12 + vm + k; vy = Math.floor(m / 12); vm = m % 12; showAllCats = false; renderHome(); };
 $('hPrev').onclick = () => moveMonth(-1);
 $('hNext').onclick = () => moveMonth(1);

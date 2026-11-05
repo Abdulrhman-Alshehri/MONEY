@@ -306,6 +306,7 @@ Everything is in `index.html`.
 - Each number needs something to compare with: Home compares with last month up to the same day. Differences under 100 SAR or 5% read "about the same", and there's no ▲/▼ verdict when either month is missing days.
 - Missing days are shown next to the total they affect (project rule).
 - Keep Home short: one heads-up at most, top 4 categories, 5 payments. Other detail belongs in Payments or Months.
+- Netlify's free plan pins a "Powered by Netlify" badge, about 200×64px, over the bottom-right corner, and it can't be hidden on that plan. Keep navigation and buttons out of that corner: that's why the tabs are at the top, and pages end with bottom padding so the last row can scroll clear of it.
 - Text: 17px base and nothing under 13px. Whole riyals in lists, exact amounts in the edit sheet.
 - Escape all data with `esc()` before `innerHTML`, or use `textContent`. Merchant names come from SMS and are untrusted.
 - Dark and light themes use CSS variables, following the phone's setting.
