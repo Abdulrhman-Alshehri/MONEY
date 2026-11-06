@@ -69,7 +69,8 @@ Three tabs: **Home**, **Payments** and **Months**. Months are calendar months in
 | Comparison | Against the month before, up to the same day: ▲ more, ▼ less, or "about the same" when the difference is under 100 SAR or 5%. **Hidden when either month is missing days**, because missing SMS would look like saving |
 | Warning | Missing days next to the total, or "Last payment was …" when nothing has arrived for 3 days |
 | Chart | This month's running total (blue) against last month's (grey) |
-| Heads-up | At most one, current month only: a category far above its usual pace, or fixed costs due in the next 7 days |
+| Left this month | With a savings plan: what's left after saving, spending and money sent to people, and how much that is a day. A past month shows how it ended against the plan |
+| Heads-up | At most one, current month only, in this order: "Salary is in, move X to savings", a warning when spending at this pace leaves less than your monthly saving, a category far above its usual pace, or fixed costs due in the next 7 days |
 | Where it went | Top 4 categories plus Other. Tap one to see its payments |
 | Latest or Biggest | The last 5 payments for the current month, or the 5 biggest for a past month. Tap one to edit it |
 
@@ -81,6 +82,7 @@ Every payment, newest first, grouped by day. Search matches the merchant, catego
 
 | Part | What it shows |
 |---|---|
+| Savings goal | With a savings plan: saved so far against the goal, and whether that's on track. If you're behind, how much a month still reaches the goal on time. Tap Edit to change the plan |
 | Usual month | Average of the last 3 complete months |
 | Bars | Spending per month for the last 12 months. "so far" is the current month; "partial" means days are missing. Tap one to open it on Home |
 | Every month | Fixed costs: the same merchant and amount about once a month, on about the same day |
@@ -96,6 +98,12 @@ Tap a payment to:
 - **Not count it**, for things like a duplicate you want to keep.
 - **Delete it.** This is permanent, and it's asked to be confirmed first.
 
+### Savings plan
+
+On Months, tap **Set a savings plan** and enter your monthly salary, salary day, how much you save each month, your goal and the first month. **The plan is kept only on this phone**, so it's never in the public repo or the database, and you'd enter it again on a new phone.
+
+When you move money to your savings account, tap that transfer, choose **Savings**, tick **Use for all transfers with this person**, and save. New transfers to that account are then recognised automatically. Savings never count as spending, and money sent back from the same account is taken off what you've saved.
+
 ### Rent paid by transfer
 
 Transfers don't count as spending until they have a category. To count rent: tap the rent transfer, choose **Rent & Housing**, tick **Use for all transfers with this person**, and save. Past rent changes at once, and new rent SMS get the category automatically.
@@ -109,7 +117,7 @@ Each payment has a `kind`:
 | `purchase` | Card, Apple Pay, online or international payment | Adds to Spent |
 | `fee` | Transfer fee and its VAT | Adds to Spent |
 | `refund` | Refund or reversal | Subtracts from Spent |
-| `transfer_out` | Money sent to a person | Adds to Spent once its category isn't Transfers, for example Rent & Housing |
+| `transfer_out` | Money sent to a person | Adds to Spent once its category isn't Transfers or Savings, for example Rent & Housing. Savings go to the savings goal instead |
 | `income` | Salary and government support | Not spending |
 | `cash_in` | ATM cash deposit | Not spending |
 | `transfer_in` | Money received from a person | Not spending |
@@ -226,6 +234,7 @@ Change it in all three places:
 
 ## Limitations
 
+- **Savings withdrawals** are matched by the account's name, so money sent back from savings is only subtracted when the SMS shows the same name both ways.
 - **Fixed costs** must repeat with exactly the same amount, so a phone bill that changes every month isn't listed under Every month.
 - **Rent across a month boundary:** paying on the 31st instead of the 1st puts two rents in one month, and the comparison jumps by that amount.
 - **One account:** built for one person, one SNB account and SAR.

@@ -65,6 +65,19 @@ h2{display:flex;justify-content:space-between;align-items:baseline;gap:12px;font
 .chip{display:inline-flex;align-items:center;gap:8px;margin-top:12px;padding:7px 12px;border-radius:99px;background:var(--card);font-size:15px}
 .chip .ico{width:14px;height:14px}
 .sum{color:var(--fg2);margin-top:14px}
+.plan{margin-top:6px;color:var(--fg2)}
+.plan b{color:var(--fg);font-weight:600}
+.plan.bad b{color:var(--bad)}
+.goal{display:block;width:100%;margin:0 0 26px;padding:16px;border-radius:16px;background:var(--card);text-align:left}
+.goal .gt{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.goal .gv{margin-top:4px;font-size:34px;font-weight:600;letter-spacing:-.01em}
+.goal .gv small{margin-left:6px;font-size:17px;font-weight:400;color:var(--fg2);letter-spacing:0}
+.meter{height:10px;margin:12px 0 10px;border-radius:5px;background:color-mix(in srgb,var(--acc) 22%,var(--card))}
+.meter i{display:block;height:100%;min-width:4px;border-radius:5px;background:var(--acc)}
+.goal .gs{font-size:15px;color:var(--fg2)}
+.goal .gs b{color:var(--fg);font-weight:600}
+.goal .gs.bad b{color:var(--bad)}
+.goal.setup b{display:block;margin-bottom:4px}
 #mUsual{margin-bottom:8px}
 #mFixed .tx:first-child{border-top:0}
 select:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
@@ -119,6 +132,7 @@ dialog .chk{display:flex;gap:10px;align-items:center;font-size:17px;color:var(--
     <div class="label">Spent</div>
     <div class="hero" id="hSpent"></div>
     <div class="delta" id="hDelta"></div>
+    <div class="plan" id="hPlan" hidden></div>
     <div class="warn" id="hWarn" hidden></div>
     <div class="legend" id="hLegend"></div>
     <div class="chart" id="hPace"></div>
@@ -140,6 +154,7 @@ dialog .chk{display:flex;gap:10px;align-items:center;font-size:17px;color:var(--
 
   <section id="months" hidden>
     <div class="top"><h1>Months</h1></div>
+    <div id="mGoal"></div>
     <div class="label" id="mUsual"></div>
     <div id="mBars"></div>
     <h2>Every month</h2>
@@ -153,7 +168,7 @@ dialog .chk{display:flex;gap:10px;align-items:center;font-size:17px;color:var(--
   <h3 id="dM"></h3>
   <div class="label" id="dS" style="margin-top:4px"></div>
   <label>Category<select id="dCat"></select></label>
-  <div class="hint" id="dHint" hidden>Transfers don't count as spending. Pick a category, like Rent &amp; Housing, to count it.</div>
+  <div class="hint" id="dHint" hidden></div>
   <label id="dNewW" hidden>New category name<input id="dNew" type="text" maxlength="30"></label>
   <label class="chk" id="dAllW"><input id="dAll" type="checkbox"><span id="dAllT"></span></label>
   <label>Note<input id="dNote" type="text" maxlength="120"></label>
@@ -161,12 +176,24 @@ dialog .chk{display:flex;gap:10px;align-items:center;font-size:17px;color:var(--
   <div class="err" id="dErr"></div>
   <div class="acts"><button class="btn danger" id="dDel">Delete</button><button class="btn" id="dCancel">Cancel</button><button class="btn primary" id="dSave">Save</button></div>
 </dialog>
+<dialog id="planDlg">
+  <h3>Savings plan</h3>
+  <div class="label" style="margin-top:4px">Kept only on this phone.</div>
+  <label>Monthly salary<input id="pIncome" type="text" inputmode="decimal" autocomplete="off"></label>
+  <label>Salary day<input id="pDay" type="text" inputmode="numeric" autocomplete="off"></label>
+  <label>Save each month<input id="pAmt" type="text" inputmode="decimal" autocomplete="off"></label>
+  <label>Savings goal<input id="pGoal" type="text" inputmode="decimal" autocomplete="off"></label>
+  <label>First month<select id="pStart"></select></label>
+  <div class="hint">Left to spend = salary − saving − spending − money sent to people.</div>
+  <div class="err" id="pErr"></div>
+  <div class="acts"><button class="btn danger" id="pDel">Remove</button><button class="btn" id="pCancel">Cancel</button><button class="btn primary" id="pOk">Save</button></div>
+</dialog>
 <div id="tt"></div>
 
 <script>
 const API = location.hostname === 'localhost' ? '/api' : 'https://itkbgyikekieqbxbbdad.supabase.co/functions/v1/sms-ingest';
 const $ = id => document.getElementById(id);
-const DEFAULT_CATS = ['Food & Cafes','Groceries','Transport','Fuel','Shopping','Bills & Telecom','Subscriptions','Rent & Housing','Entertainment','Travel','Health','Personal Care','Government','Wallets & Finance','Fees','Transfers','Income','Cash deposit','Uncategorized'];
+const DEFAULT_CATS = ['Food & Cafes','Groceries','Transport','Fuel','Shopping','Bills & Telecom','Subscriptions','Rent & Housing','Entertainment','Travel','Health','Personal Care','Government','Wallets & Finance','Fees','Savings','Transfers','Income','Cash deposit','Uncategorized'];
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 const MON = m => MONTHS[m].slice(0, 3), DAY = d => DAYS[d].slice(0, 3);
@@ -200,13 +227,32 @@ const label = p => p.kind === 'transfer_out' ? p.category : (p.merchant || 'Unkn
 const headers = () => ({'x-api-key': localStorage.getItem('tok') || ''});
 
 // THE definition of spending. Purchases and fees add, refunds subtract. A transfer you send counts once
-// you give it a category other than Transfers (rent, for example). Money received never counts.
+// you give it a category other than Transfers or Savings (rent, for example). Money received never counts.
 function spend(p) {
   if (p.excluded) return 0;
   if (p.kind === 'purchase' || p.kind === 'fee') return p.amount;
   if (p.kind === 'refund') return -p.amount;
-  if (p.kind === 'transfer_out' && p.category !== 'Transfers') return p.amount;
+  if (p.kind === 'transfer_out' && p.category !== 'Transfers' && p.category !== 'Savings') return p.amount;
   return 0;
+}
+
+// The savings plan: personal numbers stay in this phone's storage, never in the repo or the database.
+const PLAN_KEY = 'plan';
+function getPlan() {
+  try { const p = JSON.parse(localStorage.getItem(PLAN_KEY) || 'null'); return p && p.income > 0 && p.save > 0 && p.goal > 0 && Number.isFinite(p.start) ? p : null; } catch (e) { return null; }
+}
+const isSavings = p => !p.excluded && p.kind === 'transfer_out' && p.category === 'Savings';
+const sentToPeople = p => !p.excluded && p.kind === 'transfer_out' && p.category === 'Transfers';
+const outflow = p => spend(p) + (sentToPeople(p) ? p.amount : 0); // what leaves the month's money, apart from saving
+const nameKey = m => (m || '').toLowerCase().replace(/\s+/g, ' ').trim();
+// Money put into savings per month: transfers marked Savings, minus money sent back from those same accounts.
+function savedByMonth() {
+  const accounts = new Set(data.filter(isSavings).map(p => nameKey(p.merchant)).filter(Boolean)), m = new Map();
+  data.forEach(p => {
+    const v = isSavings(p) ? p.amount : !p.excluded && p.kind === 'transfer_in' && accounts.has(nameKey(p.merchant)) ? -p.amount : 0;
+    if (v) m.set(monthIdx(p._d), (m.get(monthIdx(p._d)) || 0) + v);
+  });
+  return m;
 }
 
 async function load() {
@@ -326,10 +372,11 @@ function renderHome() {
     else { const more = diff > 0; d.classList.add(more ? 'bad' : 'good'); d.innerHTML = `<b>${more ? '▲' : '▼'} ${whole(Math.abs(diff))} ${more ? 'more' : 'less'}</b> than ${period}`; }
   }
 
+  planLine(rows, isNow, upto);
   $('hLegend').innerHTML = `<span><i style="background:var(--acc)"></i>${MONTHS[vm]}</span>` + (prevCum.length ? `<span><i style="background:var(--ctx)"></i>${MONTHS[pm]}</span>` : '');
   paceChart(curCum, prevCum, Math.max(daysIn(vy, vm), prevCum.length), pm);
 
-  const note = isNow ? overUsual(rows, upto) || dueSoon(upto) : '';
+  const note = isNow ? saveReminder(rows) || forecast(rows, upto) || overUsual(rows, upto) || dueSoon(upto) : '';
   $('hNote').hidden = !note; $('hNote').innerHTML = icon('info') + `<span>${esc(note)}</span>`;
 
   const cats = totals(rows, p => p.category);
@@ -357,6 +404,34 @@ function overUsual(rows, upto) {
   byCat(rows).forEach((v, c) => { const u = (usual.get(c) || 0) / n; if (c !== 'Uncategorized' && v - u >= 150 && v >= u * 1.5 && (!best || v - u > best.x)) best = {c, v, u, x: v - u}; });
   return best ? `${best.c}: ${whole(best.v)} so far. Usually ${whole(best.u)} by now.` : '';
 }
+// Under the total: what's left of the month's money after saving, or how a past month ended against the plan.
+function planLine(rows, isNow, upto) {
+  const plan = getPlan(), el = $('hPlan');
+  el.hidden = !plan || vy * 12 + vm < plan.start;
+  if (el.hidden) return;
+  const left = plan.income - plan.save - rows.reduce((s, p) => s + outflow(p), 0), days = daysIn(vy, vm) - upto + 1;
+  el.className = 'plan' + (left < 0 ? ' bad' : '');
+  el.innerHTML = left < 0 ? `<b>${whole(-left)} over plan</b>` : isNow ? `<b>${whole(left)}</b> left · ${whole(left / days)} a day for ${days} day${days === 1 ? '' : 's'}` : `<b>${whole(left)}</b> under plan`;
+}
+// Once the salary is in, a nudge until this month's saving has been moved.
+function saveReminder(rows) {
+  const plan = getPlan();
+  if (!plan || vy * 12 + vm < plan.start || !rows.some(p => !p.excluded && p.kind === 'income' && p.amount >= plan.income / 2)) return '';
+  const moved = rows.filter(isSavings).reduce((s, p) => s + p.amount, 0);
+  return moved < plan.save - 1 ? `Salary is in. Move ${whole(plan.save - moved)} to savings.` : '';
+}
+// From day 5: if spending carries on at this pace, what would be left to save at the end of the month.
+function forecast(rows, upto) {
+  const plan = getPlan();
+  if (!plan || vy * 12 + vm < plan.start || upto < 5) return '';
+  const fixed = fixedCosts(), keys = new Set(fixed.map(f => fixedKey(f.p)));
+  let soFar = 0, everyday = 0;
+  rows.forEach(p => { const v = outflow(p); soFar += v; if (!keys.has(fixedKey(p))) everyday += v; });
+  const later = fixed.filter(f => !f.paid && f.day > upto).reduce((s, f) => s + f.p.amount, 0);
+  const canSave = Math.round((plan.income - soFar - everyday / upto * (daysIn(vy, vm) - upto) - later) / 50) * 50;
+  if (canSave >= plan.save - 100) return '';
+  return canSave < 50 ? 'At this pace nothing will be left to save this month.' : `At this pace you can save about ${whole(canSave)} this month, not ${whole(plan.save)}.`;
+}
 function dueSoon(upto) {
   const dim = daysIn(vy, vm), due = fixedCosts().filter(f => { const ahead = f.paid ? dim - upto + f.day : f.day - upto; return ahead >= 1 && ahead <= 7; });
   return due.length ? 'Due this week: ' + due.slice(0, 3).map(f => `${label(f.p)} ${amt(f.p.amount)}`).join(', ') : '';
@@ -376,7 +451,8 @@ function paceChart(curCum, prevCum, n, pm) {
   if (prevCum.length) s += `<path d="${path(prevCum)}" fill="none" stroke="var(--ctx)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><text class="e2" x="${X(prevCum.length) + 6}" y="${Y(prevCum[prevCum.length - 1]) + 4}">${whole(prevCum[prevCum.length - 1])}</text>`;
   const cx = X(curCum.length), cy = Y(curCum[curCum.length - 1]);
   s += `<path d="${path(curCum)}" fill="none" stroke="var(--acc)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="${cx}" cy="${cy}" r="4" fill="var(--acc)" stroke="var(--page)" stroke-width="2"/>`;
-  s += `<text class="e1" x="${cx + 9}" y="${cy - 8}">${whole(curCum[curCum.length - 1])}</text><line id="hx" y1="${T}" y2="${H - B}" stroke="var(--axis)" visibility="hidden"/></svg>`;
+  const flip = cx > (W - R) * 0.6; // late in the month the label goes left of the dot, clear of last month's end label
+  s += `<text class="e1" x="${flip ? cx - 9 : cx + 9}" y="${cy - 8}"${flip ? ' text-anchor="end"' : ''}>${whole(curCum[curCum.length - 1])}</text><line id="hx" y1="${T}" y2="${H - B}" stroke="var(--axis)" visibility="hidden"/></svg>`;
   box.innerHTML = s;
   const svg = box.querySelector('svg'), hx = svg.querySelector('#hx');
   svg.onpointermove = svg.onpointerdown = ev => {
@@ -420,7 +496,28 @@ function openPayments(filter, q = '') {
 }
 
 // ---------- Months ----------
+// The savings goal: saved so far, and whether that's on track for the plan.
+function goalCard() {
+  const plan = getPlan(), box = $('mGoal');
+  if (!plan) { box.innerHTML = '<button class="goal setup" id="mPlan"><b>Set a savings plan</b><span class="label">Your salary, what to save each month, and your goal</span></button>'; return; }
+  const now = monthIdx(today()), by = savedByMonth(), months = Math.ceil(plan.goal / plan.save), end = plan.start + months - 1;
+  let total = 0;
+  by.forEach((v, m) => { if (m >= plan.start && m <= now) total += v; });
+  total = Math.max(0, total);
+  const done = Math.min(months, Math.max(0, now - plan.start)), expected = plan.save * done, thisMonth = Math.max(0, by.get(now) || 0);
+  let status, bad = false;
+  if (total >= plan.goal) status = '<b>Goal reached</b>';
+  else if (now < plan.start) status = `Starts in ${monthName(Math.floor(plan.start / 12), plan.start % 12)}`;
+  else if (now > end) { bad = true; status = `<b>${whole(plan.goal - total)} short</b> of the goal`; }
+  else if (total + 1 >= expected) status = `<b>On track</b> · month ${now - plan.start + 1} of ${months} · ` + (thisMonth >= plan.save - 1 ? 'this month done' : `move ${whole(plan.save - thisMonth)} after your salary on the ${ordinal(plan.day || 27)}`);
+  else { bad = true; status = `<b>Behind by ${whole(expected - total)}</b> · save ${whole((plan.goal - total) / (months - done))} a month to finish on time`; }
+  const pct = Math.min(100, total / plan.goal * 100);
+  box.innerHTML = `<div class="goal"><div class="gt"><span class="label">Savings goal · by ${monthName(Math.floor(end / 12), end % 12)}</span><button class="link" id="mPlan">Edit</button></div>` +
+    `<div class="gv">${whole(total)}<small> of ${whole(plan.goal)}</small></div><div class="meter" role="img" aria-label="${Math.round(pct)}% of the goal saved"><i style="width:${pct.toFixed(1)}%"></i></div><div class="gs${bad ? ' bad' : ''}">${status}</div></div>`;
+}
+
 function renderMonths() {
+  goalCard();
   const t = today(), now = monthIdx(t), sums = new Map();
   data.forEach(p => { const v = spend(p); if (v) sums.set(monthIdx(p._d), (sums.get(monthIdx(p._d)) || 0) + v); });
   const list = [];
@@ -495,10 +592,14 @@ function edit(p) {
   hideTip();
   $('dlg').showModal();
 }
-const hint = () => { $('dHint').hidden = !(cur && cur.kind === 'transfer_out' && $('dCat').value === 'Transfers'); };
+function hint() {
+  const c = $('dCat').value, t = !(cur && cur.kind === 'transfer_out') ? '' : c === 'Transfers' ? "Transfers don't count as spending. Pick a category, like Rent & Housing, to count it, or Savings for money you put aside." : c === 'Savings' ? 'Savings never count as spending. They count toward your savings goal.' : '';
+  $('dHint').hidden = !t; $('dHint').textContent = t;
+}
 $('dCat').onchange = () => { $('dNewW').hidden = $('dCat').value !== '__new'; hint(); };
 $('dCancel').onclick = () => $('dlg').close();
-$('dlg').addEventListener('click', e => { const r = $('dlg').getBoundingClientRect(); if (e.target === $('dlg') && (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom)) $('dlg').close(); });
+const closeOutside = d => d.addEventListener('click', e => { const r = d.getBoundingClientRect(); if (e.target === d && (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom)) d.close(); });
+closeOutside($('dlg')); closeOutside($('planDlg'));
 $('dSave').onclick = async () => {
   const category = $('dCat').value === '__new' ? $('dNew').value.trim() : $('dCat').value;
   if (!category) { $('dErr').textContent = 'Type a category name'; return; }
@@ -534,6 +635,27 @@ $('pMore').onclick = () => { shown += 60; renderPay(); };
 $('q').oninput = () => { shown = 60; renderPay(); };
 $('mBars').onclick = e => { const b = e.target.closest('button'); if (!b) return; const m = +b.dataset.m; vy = Math.floor(m / 12); vm = m % 12; showAllCats = false; tab = 'home'; render(); scrollTo(0, 0); };
 $('mFixed').onclick = e => { const b = e.target.closest('button'); if (b) openPayments(null, b.dataset.q); };
+$('mGoal').onclick = e => { if (e.target.closest('#mPlan')) openPlan(); };
+
+// ---------- savings plan sheet ----------
+const num = v => parseFloat(String(v).replace(/[,\s]/g, ''));
+function openPlan() {
+  const now = monthIdx(today()), p = getPlan() || {income: '', day: 27, save: '', goal: '', start: now}, list = [];
+  for (let m = Math.min(p.start, now - 3); m <= now + 2; m++) list.push([m, monthName(Math.floor(m / 12), m % 12)]);
+  $('pIncome').value = p.income; $('pDay').value = p.day; $('pAmt').value = p.save; $('pGoal').value = p.goal;
+  opts($('pStart'), list); $('pStart').value = String(p.start);
+  $('pDel').hidden = !getPlan(); $('pErr').textContent = '';
+  $('planDlg').showModal();
+}
+$('pOk').onclick = () => {
+  const p = {income: num($('pIncome').value), day: Math.round(num($('pDay').value)) || 27, save: num($('pAmt').value), goal: num($('pGoal').value), start: +$('pStart').value};
+  const err = !(p.income > 0 && p.save > 0 && p.goal > 0) ? 'Fill in the salary, the monthly saving and the goal' : p.save >= p.income ? 'The monthly saving must be less than the salary' : p.day < 1 || p.day > 31 ? 'Salary day is a day of the month, 1 to 31' : '';
+  if (err) { $('pErr').textContent = err; return; }
+  try { localStorage.setItem(PLAN_KEY, JSON.stringify(p)); } catch (e) { $('pErr').textContent = 'Could not save on this phone'; return; }
+  $('planDlg').close(); render();
+};
+$('pDel').onclick = () => { if (!confirm('Remove your savings plan?')) return; try { localStorage.removeItem(PLAN_KEY); } catch (e) {} $('planDlg').close(); render(); };
+$('pCancel').onclick = () => $('planDlg').close();
 $('tabs').onclick = e => { const b = e.target.closest('button'); if (!b) return; if (b.dataset.tab === tab) return scrollTo({top: 0, behavior: 'smooth'}); tab = b.dataset.tab; render(); scrollTo(0, 0); };
 $('go').onclick = () => { localStorage.setItem('tok', $('tok').value.trim()); $('err').textContent = ''; load(); };
 $('tok').onkeydown = e => { if (e.key === 'Enter') $('go').click(); };

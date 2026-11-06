@@ -26,7 +26,11 @@ function parse(t: string) {
   const amount = am ? parseFloat(am[1].replace(/,/g, '')) : null;
   let type = 'other', kind = 'unknown', merchant: string | null = null;
   const isIn = /وارد/.test(text);
-  if (/حوالة|تحويل/.test(text)) {
+  const head = text.split(/SAR|\d/)[0]; // the message type: the words before the first number or SAR
+  if (/رواتب|راتب/.test(head) && !/صادر/.test(head)) {
+    // A salary paid as a transfer. Only the message type is checked, so a person named Rateb stays a transfer.
+    type = 'bank'; kind = 'income'; merchant = 'Salary';
+  } else if (/حوالة|تحويل/.test(text)) {
     type = 'transfer';
     kind = isIn ? 'transfer_in' : 'transfer_out';
     merchant = text.match(/\d{4}\*?\s*([^\d*]+?)\s*\d{2}\/\d{2}\/\d{2}/)?.[1]?.trim() ?? null;

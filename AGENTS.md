@@ -126,14 +126,15 @@ Invisible characters are removed and whitespace collapsed, then, **first match w
 | Step | Pattern | Result |
 |---|---|---|
 | 1 | `otp`, `code`, `رمز`, `كلمة المرور`, `التحقق` | Dropped, never stored |
-| 2 | `حوالة` or `تحويل` | `transfer`. `transfer_in` if it contains `وارد`, else `transfer_out` |
-| 3 | `رواتب` or `راتب` | `bank`, `income`, merchant `Salary` |
-| 4 | `إيداع` | `atm`, `cash_in`, merchant `Cash deposit` |
-| 5 | `إعادة`, `استرداد`, `عكس`, `مرتجع` | `pos`, `refund` |
-| 6 | `شراء`, `خصم`, `سداد` | `purchase`. Type `pos` if it contains `POS`, `intl` if `دولي`, else `online` |
-| 7 | Anything else | `unknown`, stored with `excluded=true` |
+| 2 | `رواتب` or `راتب` in the message type (the words before the first number or `SAR`), and no `صادر` there | `bank`, `income`, merchant `Salary`. This is how `حوالة واردة راتب` arrives. Checking only the type keeps a transfer from a person named راتب a transfer |
+| 3 | `حوالة` or `تحويل` | `transfer`. `transfer_in` if it contains `وارد`, else `transfer_out` |
+| 4 | `رواتب` or `راتب` anywhere | `bank`, `income`, merchant `Salary` |
+| 5 | `إيداع` | `atm`, `cash_in`, merchant `Cash deposit` |
+| 6 | `إعادة`, `استرداد`, `عكس`, `مرتجع` | `pos`, `refund` |
+| 7 | `شراء`, `خصم`, `سداد` | `purchase`. Type `pos` if it contains `POS`, `intl` if `دولي`, else `online` |
+| 8 | Anything else | `unknown`, stored with `excluded=true` |
 
-**Checked against real SMS:** online purchase, POS purchase. The transfer pattern was tested with a made-up message in the real layout. **Steps 3 to 5 are unconfirmed guesses** based on statement wording, and need checking against real messages when they arrive.
+**Checked against real SMS:** online purchase, POS purchase, salary (`حوالة واردة راتب`), outgoing local transfer, incoming internal transfer. **Steps 4 to 6 are unconfirmed guesses** based on statement wording, and need checking against real messages when they arrive.
 
 The trigger is any message containing `SAR`, so promotions and messages from other senders reach this code. That's why step 7 exists.
 
@@ -145,6 +146,8 @@ Logical text with line breaks flattened. The phone can display these differently
 شراء انترنت بـ16.75 SAR من 1111* من Jeeny مدى-ابل *2222 في 05/11/26 09:30
 شراء-POS بـ2.50 SAR من SHOP NAME مدى-ابل*2222 في 05/11/26 12:37
 حوالة صادرة محلية بـ250.50 SAR لـ*3333 PERSON NAME 05/11/26 15:22
+حوالة واردة داخلية ب300 SAR من4444* PERSON NAME 05/11/26 10:20
+حوالة واردة راتب مبلغ SAR 9000 حساب5555* في 27/11/26 08:00
 ```
 
 - **Amount:** number before or after `SAR`.
@@ -290,18 +293,22 @@ Everything is in `index.html`.
 | Function | Job |
 |---|---|
 | `load()` | Fetch data and add `_d` (Riyadh time as a Date; read with `getUTC*`). Runs again when the app comes back from the background |
-| `spend(p)` | **The single definition of what counts as spending.** Transfers out count once their category isn't `Transfers` |
+| `spend(p)` | **The single definition of what counts as spending.** Transfers out count once their category isn't `Transfers` or `Savings` |
+| `getPlan()`, `openPlan()` | The savings plan, kept in `localStorage` under `plan` on the phone |
+| `savedByMonth()`, `goalCard()` | Money moved to savings per month (transfers marked `Savings`, minus money sent back from the same account) and the goal card on Months |
+| `planLine()` | "X left · Y a day" on Home. Uses `outflow()`: spending plus money sent to people |
 | `render()` | Shows the active tab: `renderHome()`, `renderPay()` or `renderMonths()` |
 | `totals()`, `cumulative()` | Category totals and running totals by day, both from `spend()` |
 | `paceChart()`, `balChart()` | SVG charts: this month against last month, and the statement balance |
 | `gaps()`, `partial()` | Runs of 5+ days with no payments, used for warnings and "partial" months |
 | `fixedCosts()` | Same merchant and amount about once a month on about the same day; feeds Every month and "Due this week" |
-| `overUsual()`, `dueSoon()` | The single heads-up on Home |
+| `saveReminder()`, `forecast()`, `overUsual()`, `dueSoon()` | The single heads-up on Home, first match wins |
 | `edit()` and the `dSave`, `dDel` handlers | Edit sheet and API calls |
 
 ### Conventions
 
-- Every total and chart uses `spend()`, so numbers always agree.
+- Every total and chart uses `spend()`, so numbers always agree. `Savings` transfers are never spending; they feed the savings goal.
+- **Personal numbers stay on the phone.** The savings plan (salary, monthly saving, goal) lives in `localStorage` under `plan`. Never put it in code, tests, docs or the database: the repo is public.
 - Calendar months in Riyadh time. "Today" is the real date, not the latest payment.
 - Each number needs something to compare with: Home compares with last month up to the same day. Differences under 100 SAR or 5% read "about the same", and there's no ▲/▼ verdict when either month is missing days.
 - Missing days are shown next to the total they affect (project rule).
@@ -354,6 +361,8 @@ Invoke-RestMethod -Method Post -Uri $env:SMS_URL -Headers @{"x-api-key"=$env:APP
 | No in-app review list for `unknown` rows | Unrecognized SMS sit in the list, dimmed | Add a review filter |
 | Fixed costs need an identical amount | A bill that changes each month isn't listed under Every month or "Due this week" | Group by merchant with a tolerance |
 | Rent across a month boundary | Paid on the 31st instead of the 1st, one month has two rents and the comparison jumps | Compare without fixed costs |
+| Savings withdrawals matched by name | Money sent back from savings is only subtracted when the SMS shows the account name the same way in both directions | Let the user mark the savings account explicitly |
+| Savings plan is per phone | A new phone or a cleared app starts without the plan | Store it server-side if more than one device is used |
 | Statement and SMS amounts assume SAR | Foreign amounts rely on the bank's conversion | Fine unless SMS formats differ |
 | `tools/` is Windows-only | Other systems can't run imports | Port if needed |
 
@@ -370,6 +379,7 @@ Invoke-RestMethod -Method Post -Uri $env:SMS_URL -Headers @{"x-api-key"=$env:APP
 
 - [ ] No secrets or personal data in the diff
 - [ ] `spend()` is still the only definition of spending
+- [ ] No personal numbers (salary, savings, names) in code, tests or docs
 - [ ] Tested at phone width
 - [ ] Test rows removed from the live database
 - [ ] Deployed function matches the repo
