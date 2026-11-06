@@ -47,6 +47,7 @@ Why it's built this way:
 |---|---|
 | `index.html` | The whole dashboard: HTML, CSS and JavaScript. No build step or libraries |
 | `sw.js` | Service worker: uses the network first and falls back to cache when offline |
+| `widget.js` | Scriptable widget for the Home Screen and Lock Screen. It holds no secrets: the token and plan stay in the iPhone Keychain |
 | `manifest.json`, `icon.svg` | Home Screen name and icon |
 | `supabase/functions/sms-ingest/index.ts` | Backend: SMS parsing, categories and the API |
 | `supabase/schema.sql` | Database tables and indexes |
@@ -70,13 +71,16 @@ Three tabs: **Home**, **Payments** and **Months**. Months are calendar months in
 | Warning | Missing days next to the total, or "Last payment was …" when nothing has arrived for 3 days |
 | Chart | This month's running total (blue) against last month's (grey) |
 | Left this month | With a savings plan: what's left after saving, spending and money sent to people, and how much that is a day. A past month shows how it ended against the plan |
-| Heads-up | At most one, current month only, in this order: "Salary is in, move X to savings", a warning when spending at this pace leaves less than your monthly saving, a category far above its usual pace, or fixed costs due in the next 7 days |
+| Heads-up | At most one, current month only, in this order: "Salary is in, move X to savings"; a possible duplicate or unrecognised SMS from the last 7 days (tap it to open Review); a warning when spending at this pace leaves less than your monthly saving; a subscription that changed price or is new; an unusually big payment from the last 3 days; a category far above its usual pace; fixed costs due in the next 7 days |
 | Where it went | Top 4 categories plus Other. Tap one to see its payments |
 | Latest or Biggest | The last 5 payments for the current month, or the 5 biggest for a past month. Tap one to edit it |
 
 ### Payments
 
-Every payment, newest first, grouped by day. Search matches the merchant, category, note or amount. Opened from a category or "See all", it's filtered to that month; tap the chip to clear it. Tap a payment to edit it.
+Every payment, newest first, grouped by day. Search matches the merchant, category, note or amount. Opened from a category or "See all", it's filtered to that month; tap the chip to clear it. Tap a payment to edit it. A payment far above your normal at that place says "usually X here".
+
+- **Review** (top right, when there's something to check): possible duplicates (same place and amount from SMS within 2 minutes; delete one, or tap "Both are real"), SMS that weren't recognised, and Uncategorized payments.
+- **Export**: every payment as a CSV file, through the share sheet, for Excel or Numbers.
 
 ### Months
 
@@ -85,15 +89,16 @@ Every payment, newest first, grouped by day. Search matches the merchant, catego
 | Savings goal | With a savings plan: saved so far against the goal, and whether that's on track. If you're behind, how much a month still reaches the goal on time. Tap Edit to change the plan |
 | Usual month | Average of the last 3 complete months |
 | Bars | Spending per month for the last 12 months. "so far" is the current month; "partial" means days are missing. Tap one to open it on Home |
-| Every month | Fixed costs: the same merchant and amount about once a month, on about the same day |
-| Balance | From bank statements only, so it ends at the latest statement |
+| Habits | No-spend days this month (rent and bills don't count), Fri–Sat against other days over the last 8 weeks, and small payments you make often with their yearly cost |
+| Every month | Fixed costs: the same merchant and amount about once a month, on about the same day, and what subscriptions cost a year. A changed price shows "was X". Food, groceries, transport, shopping and fuel are never treated as fixed costs |
+| Balance | From bank statements only, so it ends at the latest statement. After 35 days it asks for a newer one |
 
 ### Editing a payment
 
 Tap a payment to:
 
 - **Change its category**, or choose "New category..." to create one.
-- **Apply it to all of them** with "Use for all...": every payment from that merchant, or every transfer with that person. This changes past payments and saves a rule for new SMS.
+- **Apply it to all of them** with "Use for all...": every payment from that merchant, or every transfer with that person, whatever the capitals or spacing ("JAHEZ " and "Jahez" count as one). Money received from them keeps its own category. This changes past payments and saves a rule for new SMS and for statement imports.
 - **Add a note.**
 - **Not count it**, for things like a duplicate you want to keep.
 - **Delete it.** This is permanent, and it's asked to be confirmed first.
@@ -159,9 +164,16 @@ In the Shortcuts app, go to Automation > + > Message (رسالة):
 
 Type the header on the English keyboard. To debug, temporarily add a **Show Result** (إظهار النتيجة) action after it.
 
+4. Optional, a notification after each payment: add **Get Dictionary Value** (key `notice`, from Contents of URL), then **If** (Dictionary Value has any value) with **Show Notification** (Dictionary Value) inside it. It reads like "Jahez 45.50 · Food & Cafes · 3,240 spent this month". Login codes return no notice, so they stay silent.
+
 ### 4. Home Screen
 
 Open the site in Safari, enter the token, then choose Share > Add to Home Screen.
+
+### 5. Optional: Siri and widgets
+
+- **Siri:** make a shortcut named, say, "My spending" with **Get Contents of URL** (the URL above plus `?action=summary`, method GET, header `x-api-key`), **Get Dictionary Value** (key `text`) and **Speak Text**. "Hey Siri, my spending" then says what you've spent this month and how that compares with last month.
+- **Widgets:** install the free Scriptable app, add a script, paste `widget.js`, and run it once to enter your token, salary and monthly saving (kept in the iPhone Keychain). Then add a Scriptable widget to the Home Screen (small or medium) or the Lock Screen (circular) and choose the script. The Lock Screen shows only a ring with the percentage of this month's money used.
 
 ## Common tasks
 
@@ -234,6 +246,7 @@ Change it in all three places:
 
 ## Limitations
 
+- **Widgets** refresh when iOS allows, usually every 15 to 30 minutes, and tapping one opens Safari rather than the Home Screen app.
 - **Savings withdrawals** are matched by the account's name, so money sent back from savings is only subtracted when the SMS shows the same name both ways.
 - **Fixed costs** must repeat with exactly the same amount, so a phone bill that changes every month isn't listed under Every month.
 - **Rent across a month boundary:** paying on the 31st instead of the 1st puts two rents in one month, and the comparison jumps by that amount.

@@ -34,6 +34,7 @@ The complete technical reference. Read [README.md](README.md) first for what the
 | Database | Supabase Postgres | Project ref is in the `API` constant in `index.html` |
 | Secret | `APP_TOKEN` in Supabase function secrets | Value is never in the repo. `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are provided by Supabase |
 | SMS input | iOS Shortcuts automation on the user's phone | Agents can't see or change it |
+| Widgets | `widget.js` in the Scriptable app on the phone | Calls `?action=summary`; the token, salary and saving are in the iPhone Keychain |
 | Statement import | `tools/`, run on Windows PowerShell 5.1 | No Node, Python or PDF tools were available on the user's laptop |
 
 ## API
@@ -47,19 +48,32 @@ Every request needs `x-api-key: <APP_TOKEN>`, or it gets `401 {"error":"unauthor
 Body: the SMS as plain text, or JSON with `text` or `message`.
 
 ```json
-{"ok":true,"category":"Transport","amount":16.75,"type":"online","kind":"purchase","merchant":"Jeeny","occurred_at":"2026-11-05T09:30:00+03:00"}
+{"ok":true,"category":"Transport","amount":16.75,"type":"online","kind":"purchase","merchant":"Jeeny","occurred_at":"2026-11-05T09:30:00+03:00","notice":"Jeeny 16.75 · Transport · 3,240 spent this month"}
 ```
+
+- `notice` is one line for the Shortcut's notification, made by `notice()`. Transfers, salary and savings get their own wording. It leaves out the month total if `summarize()` fails.
 
 - `400 {"error":"empty"}` for an empty body, which is what a manual Shortcut run sends.
 - `{"ok":true,"ignored":true}` for messages that look like login codes; nothing is stored.
 
 ### POST ?action=import: bulk insert
 
-Body: JSON array of rows with the `payments` columns. Rows whose `ref` already exists are skipped.
+Body: JSON array of rows with the `payments` columns. Rows whose `ref` already exists are skipped. `merchant_rules` are applied to the new rows, except money received (`transfer_in`, `income`, `cash_in`).
 
 ```json
-{"ok":true,"received":432,"inserted":432}
+{"ok":true,"received":432,"inserted":432,"categorized_by_rules":12}
 ```
+
+### GET ?action=summary: this month in numbers
+
+For the widget, Siri and the SMS notice. Riyadh time; computed by `summarize()` with `counts()`, which **must match `spend()` in `index.html`** (a test compares them on the same data).
+
+```json
+{"month":"2026-11","day":6,"days_in_month":30,"spent":2376.59,"sent":303,"last_month":"October","last_same_day":3456.54,"last_total":7629.04,"comparable":true,"stale_days":0,"text":"You've spent 2,377 riyals this month, 1,080 less than October by this day."}
+```
+
+- `sent`: money sent to people (`transfer_out` in `Transfers`), which the plan's "left" subtracts too.
+- `comparable` is false when either month has a run of 5+ days without payments, or nothing arrived for 3 days (`stale_days`), as on the dashboard. `text` then gives no verdict.
 
 ### GET: list payments
 
@@ -72,7 +86,7 @@ Returns every payment as an array, without `raw_text` or `ref`. Supabase caps ea
 ```
 
 - Only `category`, `note` and `excluded` are written to the row.
-- With `apply_to_merchant` and a `category`, it upserts a rule and updates every payment with **exactly the same** `merchant` text. The rule matches case-insensitively, but the bulk update doesn't.
+- With `apply_to_merchant` and a `category`, it upserts a rule and updates every payment with the same `merchantKey()` (capitals and spacing don't matter), except money received (`transfer_in`, `income`, `cash_in`). The edited row is always updated.
 - Returns `{"ok":true,"updated":n}`.
 
 ### DELETE ?id=uuid
@@ -113,7 +127,7 @@ Neither has a database constraint, so new values won't error. The frontend must 
 
 ### merchant_rules
 
-`merchant_key` (primary key, from `merchantKey()`: lowercase, single spaces, trimmed), `category`, `updated_at`. Read when an SMS is ingested, for purchases and outgoing transfers, and written by PATCH. Statement imports don't use it.
+`merchant_key` (primary key, from `merchantKey()`: lowercase, single spaces, trimmed), `category`, `updated_at`. Read when an SMS is ingested (purchases and outgoing transfers) and on statement import (everything except money received), and written by PATCH.
 
 ## SMS pipeline
 
@@ -302,12 +316,20 @@ Everything is in `index.html`.
 | `paceChart()`, `balChart()` | SVG charts: this month against last month, and the statement balance |
 | `gaps()`, `partial()` | Runs of 5+ days with no payments, used for warnings and "partial" months |
 | `fixedCosts()` | Same merchant and amount about once a month on about the same day; feeds Every month and "Due this week" |
-| `saveReminder()`, `forecast()`, `overUsual()`, `dueSoon()` | The single heads-up on Home, first match wins |
+| `saveReminder()`, `reviewNote()`, `forecast()`, `subsNote()`, `unusualNote()`, `overUsual()`, `dueSoon()` | The single heads-up on Home, first match wins. `reviewNote()` returns `{text, go: 'review'}`, which makes it tappable |
+| `duplicatePairs()`, `reviewItems()`, `renderReview()` | Review in Payments: SMS with the same merchant, amount and kind within 2 minutes (pairs marked "Both are real" are kept in `localStorage` under `dupOk`), `unknown` SMS, and Uncategorized spending |
+| `unusual()` | Purchases at least 3× the median of 3+ earlier ones at the same place, and 100 or more |
+| `subsChanges()` | Fixed costs charged a different amount near their usual day, and new `Subscriptions` merchants this month |
+| `habits()`, `smallLeaks()`, `renderHabits()` | No-spend days, Fri–Sat against other days (only days with data, fixed costs left out), small frequent purchases |
+| `exportCsv()` | CSV of all payments through the share sheet, with a download fallback. Cells starting with `= + - @` are quoted so spreadsheets don't run them |
+| `sameMerchantAs()` | The "Use for all" match, the same as `sameMerchant()` in `index.ts` |
 | `edit()` and the `dSave`, `dDel` handlers | Edit sheet and API calls |
 
 ### Conventions
 
 - Every total and chart uses `spend()`, so numbers always agree. `Savings` transfers are never spending; they feed the savings goal.
+- `counts()` in `index.ts` repeats `spend()` for the summary endpoint. Change both together.
+- Fixed costs skip `EVERYDAY` categories (food, groceries, transport, shopping, fuel), so a coffee at the same price a month apart isn't a bill.
 - **Personal numbers stay on the phone.** The savings plan (salary, monthly saving, goal) lives in `localStorage` under `plan`. Never put it in code, tests, docs or the database: the repo is public.
 - Calendar months in Riyadh time. "Today" is the real date, not the latest payment.
 - Each number needs something to compare with: Home compares with last month up to the same day. Differences under 100 SAR or 5% read "about the same", and there's no ▲/▼ verdict when either month is missing days.
@@ -327,6 +349,10 @@ On `localhost`, `API` becomes `/api`, so you can test without touching real data
 - Write a small local server that serves this folder and answers `/api` with a data snapshot. Keep both **outside this folder**.
 - That switch only applies on `localhost`. Never make the API URL configurable by URL parameter, because a malicious link could then capture the token.
 - Check at 375px and 320px wide, in light and dark, since this is a phone app. Test that nothing overflows.
+
+### Widget
+
+`widget.js` runs in the Scriptable app. It reads `spending.token`, `spending.income` and `spending.save` from the iPhone Keychain (entered when the script runs inside the app), calls `?action=summary`, and keeps the last good result in Scriptable's documents folder for offline use. The plan maths (`left = salary − saving − spent − sent`) matches `planLine()`. Lock Screen sizes show only the ring and percentage, never amounts. It contains the API and site URLs, so update it if either changes. Tests run it against stand-ins for Scriptable's APIs.
 
 ### Service worker
 
@@ -356,8 +382,8 @@ Invoke-RestMethod -Method Post -Uri $env:SMS_URL -Headers @{"x-api-key"=$env:APP
 | No SMS and statement matching | Double counting if periods overlap | Match on minute and amount during import |
 | One shared token, no rate limiting | A weak token can be guessed | Long random token; consider real auth |
 | Generic statement merchant names | Weak merchant ranking | Add a merchant rename feature with an alias table |
-| Statement imports don't apply `merchant_rules` | User rules aren't used for later imports; rent paid by transfer arrives as `Transfers` and must be marked again | Apply rules in `?action=import` |
-| `apply_to_merchant` only matches exact merchant text | Spelling variants stay unchanged | Compare using `merchantKey()` |
+| Spending rules exist twice | `spend()` (dashboard) and `counts()` (summary for widget, Siri, notice) must stay identical | Keep the consistency test; change both together |
+| Widget refresh and taps | iOS refreshes widgets every 15 to 30 minutes, and a tap opens Safari, not the Home Screen app | Platform limits for a web app |
 | No in-app review list for `unknown` rows | Unrecognized SMS sit in the list, dimmed | Add a review filter |
 | Fixed costs need an identical amount | A bill that changes each month isn't listed under Every month or "Due this week" | Group by merchant with a tolerance |
 | Rent across a month boundary | Paid on the 31st instead of the 1st, one month has two rents and the comparison jumps | Compare without fixed costs |
@@ -378,7 +404,7 @@ Invoke-RestMethod -Method Post -Uri $env:SMS_URL -Headers @{"x-api-key"=$env:APP
 ## Checklist before finishing a change
 
 - [ ] No secrets or personal data in the diff
-- [ ] `spend()` is still the only definition of spending
+- [ ] `spend()` is still the only definition of spending, and `counts()` in `index.ts` still matches it
 - [ ] No personal numbers (salary, savings, names) in code, tests or docs
 - [ ] Tested at phone width
 - [ ] Test rows removed from the live database
