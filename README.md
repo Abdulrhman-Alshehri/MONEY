@@ -164,7 +164,7 @@ In the Shortcuts app, go to Automation > + > Message (رسالة):
 
 Type the header on the English keyboard. To debug, temporarily add a **Show Result** (إظهار النتيجة) action after it.
 
-4. Optional, a notification after each payment: add **Get Dictionary Value** (key `notice`, from Contents of URL), then **If** (Dictionary Value has any value) with **Show Notification** (Dictionary Value) inside it. It reads like "Jahez 45.50 · Food & Cafes · 3,240 spent this month". Login codes return no notice, so they stay silent.
+4. Optional, a notification after each payment: add **Get Dictionary Value** (key `notice`, from Contents of URL), then **If** (Dictionary Value has any value) with **Show Notification** (Dictionary Value) inside it. It reads like "Jahez 45.50 · Food & Cafes: 410 this month · 3,240 total": the payment, what you've spent in its category this month, and all your spending this month. Login codes return no notice, so they stay silent.
 
 ### 4. Home Screen
 

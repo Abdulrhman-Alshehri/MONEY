@@ -48,10 +48,10 @@ Every request needs `x-api-key: <APP_TOKEN>`, or it gets `401 {"error":"unauthor
 Body: the SMS as plain text, or JSON with `text` or `message`.
 
 ```json
-{"ok":true,"category":"Transport","amount":16.75,"type":"online","kind":"purchase","merchant":"Jeeny","occurred_at":"2026-11-05T09:30:00+03:00","notice":"Jeeny 16.75 · Transport · 3,240 spent this month"}
+{"ok":true,"category":"Transport","amount":16.75,"type":"online","kind":"purchase","merchant":"Jeeny","occurred_at":"2026-11-05T09:30:00+03:00","notice":"Jeeny 16.75 · Transport: 410 this month · 3,240 total"}
 ```
 
-- `notice` is one line for the Shortcut's notification, made by `notice()`. Transfers, salary and savings get their own wording. It leaves out the month total if `summarize()` fails.
+- `notice` is one line for the Shortcut's notification, made by `notice()`: the payment, its category's total this month (from the summary's `categories`), and all spending this month. Transfers, salary and savings get their own wording. It leaves out the totals if `summarize()` fails.
 
 - `400 {"error":"empty"}` for an empty body, which is what a manual Shortcut run sends.
 - `{"ok":true,"ignored":true}` for messages that look like login codes; nothing is stored.
@@ -69,13 +69,14 @@ Body: JSON array of rows with the `payments` columns. Rows whose `ref` already e
 For the widget, Siri and the SMS notice. Riyadh time; computed by `summarize()` with `counts()`, which **must match `spend()` in `index.html`** (a test compares them on the same data).
 
 ```json
-{"month":"2026-11","day":6,"days_in_month":30,"spent":2376.59,"sent":303,"last_month":"October","last_same_day":3456.54,"last_total":7629.04,"comparable":true,"stale_days":0,"gaps":[],"top":[{"category":"Food & Cafes","amount":688.45},{"category":"Groceries","amount":412.3},{"category":"Transport","amount":230}],"text":"You've spent 2,377 riyals this month, 1,080 less than October by this day."}
+{"month":"2026-11","day":6,"days_in_month":30,"spent":2376.59,"sent":303,"last_month":"October","last_same_day":3456.54,"last_total":7629.04,"comparable":true,"stale_days":0,"gaps":[],"top":[{"category":"Food & Cafes","amount":688.45},{"category":"Groceries","amount":412.3},{"category":"Transport","amount":230}],"categories":{"Food & Cafes":688.45,"Groceries":412.3,"Transport":230,"Bills & Telecom":215,"Shopping":199.99,"Fuel":180,"Subscriptions":150.5,"Health":98.35,"Entertainment":85,"Personal Care":70,"Uncategorized":47},"text":"You've spent 2,377 riyals this month, 1,080 less than October by this day."}
 ```
 
 - `sent`: money sent to people (`transfer_out` in `Transfers`), which the plan's "left" subtracts too.
 - `comparable` is false when nothing arrived for 3 days (`stale_days`), or when either period (this month so far, last month up to the same day) touches a run of 5+ days without payments, as on the dashboard. Runs are measured in full across month boundaries: 1–3 Mar counts when it ends a gap that began 20 Feb. That's why it reads from 5 days before last month. `text` then gives no verdict.
 - `gaps`: those runs from the start of last month to the latest payment, clipped to that period, as `[from, to]` dates (Riyadh, `YYYY-MM-DD`). The dashboard's "No data" warning shows the same ones. `gaps()` here repeats `gaps()` and `incomplete()` in `index.html`; a test compares them.
 - `top`: this month's 3 biggest categories by `counts()`, refunds taken off, as "Where it went" on Home.
+- `categories`: every category's spending this month, the same way. The SMS notice reads the payment's category from it.
 
 ### GET: list payments
 

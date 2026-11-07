@@ -161,22 +161,24 @@ async function summarize() {
     comparable: fair, stale_days: stale, gaps: missing.map(([a, b]) => [isoDay(a), isoDay(b)]),
     // Biggest categories this month, as totals() in index.html: refunds already taken off
     top: [...byCat].filter(([, v]) => v > 0.5).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([category, v]) => ({ category, amount: round2(v) })),
+    categories: Object.fromEntries([...byCat].map(([c, v]) => [c, round2(v)])), // every category this month, for the SMS notice
     text,
   };
 }
 
-// One line for the Shortcut's notification after each SMS.
+// One line for the Shortcut's notification after each SMS: the payment, then its category's total this month and all
+// spending this month, labelled so one total can't be read as the other.
 // deno-lint-ignore no-explicit-any
 function notice(p: any, category: string, s: any) {
   const a = p.amount == null ? '?' : exact(num(p.amount)), who = p.merchant ?? 'someone';
-  const month = s ? ` · ${whole(s.spent)} spent this month` : '';
+  const cat = s ? `${category}: ${whole(s.categories[category] ?? 0)} this month · ${whole(s.spent)} total` : category;
   switch (p.kind) {
-    case 'purchase': case 'fee': return `${p.merchant ?? 'Payment'} ${a} · ${category}${month}`;
-    case 'refund': return `Refund ${a} from ${p.merchant ?? 'a shop'}${month}`;
+    case 'purchase': case 'fee': return `${p.merchant ?? 'Payment'} ${a} · ${cat}`;
+    case 'refund': return `Refund ${a} from ${p.merchant ?? 'a shop'} · ${cat}`;
     case 'income': return `Salary in: ${a}`;
     case 'cash_in': return `Cash deposit: ${a}`;
     case 'transfer_in': return `Received ${a} from ${who}`;
-    case 'transfer_out': return category === 'Savings' ? `Moved ${a} to savings` : category === 'Transfers' ? `Sent ${a} to ${who} · not counted as spending` : `${who} ${a} · ${category}${month}`;
+    case 'transfer_out': return category === 'Savings' ? `Moved ${a} to savings` : category === 'Transfers' ? `Sent ${a} to ${who} · not counted as spending` : `${who} ${a} · ${cat}`;
     default: return 'Saved, but not recognised. Check Review in the app.';
   }
 }
