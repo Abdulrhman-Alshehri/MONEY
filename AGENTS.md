@@ -134,7 +134,7 @@ The app's fixed costs, sent whole when they change: `[{"key":"stc|230.00","label
 
 ### GET and PUT ?action=bnpl: Tabby and Tamara plans
 
-`[{"id":"<uuid>","provider":"Tabby","amount":95.50,"count":4,"first":"2026-09-15","every":"month","note":null}]`. PUT sends the whole set, as for limits. The app makes each `id`, so a plan saved offline keeps it. `every` is `month` or `2weeks`, and `count` is 1 to 36.
+`[{"id":"<uuid>","provider":"Tabby","amount":95.50,"count":4,"first":"2026-09-15","every":"month","paid":0,"note":null}]`. PUT sends the whole set, as for limits. The app makes each `id`, so a plan saved offline keeps it. `every` is `month` or `2weeks`, `count` is 1 to 36, and `paid` (0 to `count`, default 0) is how many instalments the user marked as paid so far.
 
 ## Database
 
@@ -204,7 +204,7 @@ Neither has a database constraint, so new values won't error. The frontend must 
 
 ### bnpl_plans
 
-`id`, `provider`, `amount` (each instalment), `count`, `first` (date of the first instalment), `every`, `note`, `created_at`.
+`id`, `provider`, `amount` (each instalment), `count`, `first` (date of the first instalment), `every`, `paid` (instalments marked as paid so far, 0 to `count`), `note`, `created_at`.
 
 ## SMS pipeline
 
@@ -400,7 +400,7 @@ Compiling `Stmt.cs` with `Add-Type` limits it to C# 5 syntax. Scripts need a UTF
 - **Once only.** An alert claims its `notify_log` key before sending and gives it back if no device got it, so a later hour in the window tries again. The windows are several hours long, so one missed run loses nothing.
 - **No devices, no work.** Alert jobs run only while `push_subscriptions` has a row. The backup always runs.
 - **Mirrors of the app.** `limitAlerts()` follows `mostlyFixed()`, `billAlerts()` follows `dueSoon()`, `bnplState()` is the same as `bnplState()` in `index.html`, `recapPush()` follows `recapCard()`, and `weekly()` leaves out fixed costs as `habits()` does. Change both together.
-- **Bills come from the app.** The server doesn't detect fixed costs itself: after each online load the app sends `fixedCosts()` to `bills` if the list changed. A bill whose merchant contains a plan's provider gets no reminder of its own; the plan's reminder covers it.
+- **Bills come from the app.** The server doesn't detect fixed costs itself: after each online load the app sends `fixedCosts()` to `bills` if the list changed. A bill whose merchant or category contains a plan's provider gets no reminder of its own; the plan's reminder covers it.
 - **Messages** are `{title, body, tag}`, encrypted for each device (RFC 8291, aes128gcm) and signed with the VAPID key (RFC 8292), with WebCrypto only. The VAPID contact is the site URL in `SITE`, never a personal address. A message replaces an older one with the same tag.
 - **Checking on real data:** `POST ?action=tick&force=all` with the full key returns every message without sending anything.
 
@@ -442,7 +442,7 @@ Everything is in `index.html`.
 | `openCats()`, `editCat()`, `catAction()` | The category manager (`?action=category`). `BUILT_IN` categories can't be changed, because the rules depend on their names |
 | `act()`, `flush()`, `applyOp()`, `outbox()` | Offline. Each load keeps a copy of the payments in Cache Storage (`data-v1`), used when the server can't be reached. Edits go through `act()`: on no connection or a 5xx they're queued in `localStorage` `outbox`, applied to the copy at once, and sent in order before the next load or on the `online` event. Queued changes are applied again on top of a cached copy |
 | `syncBills()` | Sends `fixedCosts()` to `?action=bills` after an online load, only when the list changed (`localStorage` `billsSent`) |
-| `bnplState()`, `instalmentsDue()`, `planCovers()`, `bnplGuess()`, `renderBnpl()`, `openBnpl()`, `saveBnpl()` | Tabby and Tamara on Months. A plan's instalments paid are payments whose merchant contains the provider, within 1 riyal of the instalment, from 3 days before the first, earliest first, each counted for one plan only: the same rules as `bnplState()` in `index.ts`. Unpaid instalments this month are held back in `planLine()` and `forecast()` and listed in `dueSoon()`; a fixed cost that a plan covers is left out there. A new plan is filled in from the latest Tabby or Tamara payment no plan has claimed |
+| `bnplState()`, `instalmentsDue()`, `planCovers()`, `bnplGuess()`, `renderBnpl()`, `openBnpl()`, `saveBnpl()` | Tabby and Tamara on Months. A plan's instalments paid are payments whose merchant or category contains the provider (a first instalment paid in a shop shows the shop's name, so the category is what says Tamara), within 1 riyal of the instalment, from 3 days before it falls due, earliest first, each counted for one plan only: the same rules as `bnplState()` in `index.ts`. "Paid so far" (`paid`) counts that many instalments without a payment and starts the search after them, so it never double-counts and works as a minimum. Unpaid instalments this month are held back in `planLine()` and `forecast()` and listed in `dueSoon()`; a fixed cost that a plan covers is left out there. A new plan is filled in from the latest Tabby or Tamara payment no plan has claimed. Saving a plan reloads the payments |
 | `renderNotify()`, `turnOnPush()`, `testPush()`, `turnOffPush()`, `syncPush()` | Notifications on Months. The server's key is fetched when the button shows, so one tap asks permission and subscribes straight away, as iOS requires. A subscribed phone sends its subscription again once a day (`pushAt`) in case the server dropped it |
 | `loadStatus()`, `renderBackup()` | The backup line on Months, from `?action=status` |
 
@@ -518,7 +518,7 @@ After deploying, check the scheduled jobs on real data with `POST ?action=tick&f
 | Notifications show amounts | They can be read on the Lock Screen | iOS: Settings > Notifications > Spending > Show Previews: When Unlocked |
 | Alerts run hourly | A limit crossed at 14:10 is announced by 15:07; the SMS notice is instant | Fine for summaries and reminders |
 | Bills for reminders come from the app | A new fixed cost reaches the server only after the app is opened | Open the app now and then |
-| Instalments are matched by name and amount | A plan counts payments whose merchant contains the provider's name, within 1 riyal | Edit the plan if the name on the SMS differs |
+| Instalments are matched by name and amount | A plan counts payments whose merchant or category contains the provider's name, within 1 riyal | Give the payment the provider's category, or set "Paid so far" on the plan |
 
 ## Ideas not built yet
 

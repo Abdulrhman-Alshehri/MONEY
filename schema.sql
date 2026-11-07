@@ -102,9 +102,11 @@ create table public.bnpl_plans (
   count integer not null check (count between 1 and 36),
   first date not null,                             -- the first instalment
   every text not null default 'month' check (every in ('month', '2weeks')),
+  paid integer not null default 0,                 -- instalments marked as paid so far, for payments the app can't see
   note text,
   created_at timestamptz not null default now()
 );
+alter table public.bnpl_plans add constraint bnpl_plans_paid_range check (paid >= 0 and paid <= count);
 alter table public.bnpl_plans enable row level security;
 
 -- Weekly backups go here. Private: only the service role can read it.

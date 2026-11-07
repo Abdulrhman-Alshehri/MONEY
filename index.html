@@ -286,6 +286,8 @@ dialog input[type=date]{-webkit-appearance:none;appearance:none;min-height:46px;
     <label>Number of instalments<input id="iCount" type="text" inputmode="numeric" autocomplete="off"></label>
     <label>First instalment<input id="iFirst" type="date"></label>
     <label>Every<select id="iEvery"><option value="month">Month</option><option value="2weeks">2 weeks</option></select></label>
+    <label>Paid so far<input id="iPaid" type="text" inputmode="numeric" autocomplete="off"></label>
+    <div class="hint">Payments the app finds count by themselves. Set this if one is missing, such as an instalment paid in a shop under the shop's name.</div>
     <label>What it was for (optional)<input id="iNote" type="text" maxlength="80" autocomplete="off"></label>
   </div>
   <div class="err" id="iErr"></div>
@@ -537,19 +539,24 @@ async function syncBills() {
 
 // ---------- Tabby and Tamara ----------
 // Plans you enter; the instalments paid are found among the payments. The same rules as bnplState() in index.ts:
-// payments to that provider of about the instalment (within 1 riyal), from 3 days before the first, earliest first,
-// each counted for one plan only.
+// a payment whose merchant or category contains the provider's name (a first instalment paid in a shop shows the shop's
+// name, so its category is what says Tamara), within 1 riyal of the instalment, from 3 days before it falls due,
+// earliest first, each counted for one plan only. `paid` is what you entered as paid so far: those count without a
+// payment and the search starts after them, so a payment the app also finds is never counted twice.
 const isoDate = n => fromDayNum(n).toISOString().slice(0, 10);
 const addMonthsN = (n, k) => { const d = fromDayNum(n), y = d.getUTCFullYear(), m = d.getUTCMonth() + k; return dayNum(new Date(Date.UTC(y, m, Math.min(d.getUTCDate(), daysIn(y, m))))); };
 const planDay = (pl, i) => { const first = dayNum(new Date(pl.first + 'T00:00:00Z')); return pl.every === '2weeks' ? first + 14 * i : addMonthsN(first, i); };
+const ofPlan = (pl, p) => { const k = nameKey(pl.provider); return !!k && (nameKey(p.merchant).includes(k) || nameKey(p.category).includes(k)) && Math.abs(p.amount - pl.amount) <= 1; };
 function bnplState() {
   const used = new Set(), state = new Map();
-  const pays = data.filter(p => spend(p) > 0 && p.merchant).sort((a, b) => a._d - b._d || (a.created_at < b.created_at ? -1 : 1));
+  const pays = data.filter(p => spend(p) > 0).sort((a, b) => a._d - b._d || (a.created_at < b.created_at ? -1 : 1));
   [...bnpl].sort((a, b) => a.first === b.first ? (String(a.id) < String(b.id) ? -1 : 1) : a.first < b.first ? -1 : 1).forEach(pl => {
-    const first = planDay(pl, 0), key = nameKey(pl.provider);
-    const hits = pays.filter(p => !used.has(p) && nameKey(p.merchant).includes(key) && Math.abs(p.amount - pl.amount) <= 1 && dayNum(p._d) >= first - 3).slice(0, pl.count);
+    const skip = Math.min(pl.count, Math.max(0, Math.floor(pl.paid || 0))), from = planDay(pl, skip) - 3, fits = p => !used.has(p) && ofPlan(pl, p);
+    pays.filter(p => fits(p) && dayNum(p._d) >= planDay(pl, 0) - 3 && dayNum(p._d) < from).slice(0, skip).forEach(p => used.add(p)); // the ones you entered
+    const hits = pays.filter(p => fits(p) && dayNum(p._d) >= from).slice(0, pl.count - skip);
     hits.forEach(p => used.add(p));
-    state.set(pl.id, {paid: hits.length, next: hits.length >= pl.count ? null : planDay(pl, hits.length)});
+    const paid = skip + hits.length;
+    state.set(pl.id, {paid, next: paid >= pl.count ? null : planDay(pl, paid)});
   });
   return {state, used};
 }
@@ -560,14 +567,16 @@ function instalmentsDue(from, to) {
   return out.sort((a, b) => a.day - b.day);
 }
 // A fixed cost that is really an instalment, so it isn't counted twice (the server skips the same ones in its reminders)
-const planCovers = f => bnpl.some(pl => nameKey(f.p.merchant).includes(nameKey(pl.provider)));
-// A new plan, filled in from a recent Tabby or Tamara payment that no plan has claimed: its earliest run of the same amount
+const planCovers = f => bnpl.some(pl => { const k = nameKey(pl.provider); return !!k && (nameKey(f.p.merchant).includes(k) || nameKey(f.p.category).includes(k)); });
+// A new plan, filled in from a recent Tabby or Tamara payment (by merchant or category) that no plan has claimed: its
+// earliest run of the same amount
 function bnplGuess() {
-  const {used} = bnplState(), free = data.filter(p => spend(p) > 0 && /tabby|tamara/i.test(p.merchant || '') && !used.has(p)).sort((a, b) => b._d - a._d);
+  const prov = p => { const t = `${p.merchant || ''} ${p.category || ''}`; return /tamara/i.test(t) ? 'Tamara' : /tabby/i.test(t) ? 'Tabby' : ''; };
+  const {used} = bnplState(), free = data.filter(p => spend(p) > 0 && prov(p) && !used.has(p)).sort((a, b) => b._d - a._d);
   const last = free[0];
   if (!last || dayNum(today()) - dayNum(last._d) > 60) return null;
-  const firstPay = free.filter(p => nameKey(p.merchant) === nameKey(last.merchant) && Math.abs(p.amount - last.amount) <= 1 && dayNum(last._d) - dayNum(p._d) <= 150).pop();
-  return {provider: /tamara/i.test(last.merchant) ? 'Tamara' : 'Tabby', amount: last.amount, count: 4, first: isoDate(dayNum(firstPay._d)), every: 'month', note: ''};
+  const provider = prov(last), firstPay = free.filter(p => prov(p) === provider && Math.abs(p.amount - last.amount) <= 1 && dayNum(last._d) - dayNum(p._d) <= 150).pop();
+  return {provider, amount: last.amount, count: 4, first: isoDate(dayNum(firstPay._d)), every: 'month', paid: 0, note: ''};
 }
 function renderBnpl() {
   const {state} = bnplState(), td = dayNum(today());
@@ -583,13 +592,14 @@ function renderBnpl() {
 }
 function openBnpl(id) {
   const pl = bnpl.find(x => x.id === id), g = pl ? null : bnplGuess();
-  const v = pl || g || {provider: 'Tabby', amount: '', count: 4, first: isoDate(dayNum(today())), every: 'month', note: ''};
+  const v = pl || g || {provider: 'Tabby', amount: '', count: 4, first: isoDate(dayNum(today())), every: 'month', paid: 0, note: ''};
   planEdit = pl ? pl.id : null;
   $('iT').textContent = pl ? 'Instalment plan' : 'New instalment plan';
   $('iInfo').textContent = g ? `Filled in from your ${g.provider} payments, starting ${dayLabel(fromDayNum(dayNum(new Date(g.first + 'T00:00:00Z'))), true)}. Check the number of instalments.` : 'Payments to the provider of this amount count as paid when they arrive.';
   const known = ['Tabby', 'Tamara'].includes(v.provider);
   $('iProv').value = known ? v.provider : ''; $('iOther').value = known ? '' : v.provider; $('iOtherW').hidden = known;
   $('iAmt').value = v.amount; $('iCount').value = v.count; $('iFirst').value = v.first; $('iEvery').value = v.every; $('iNote').value = v.note || '';
+  $('iPaid').value = pl ? bnplState().state.get(pl.id).paid : 0; // what the plan shows now, found or entered
   $('iDel').hidden = !pl; $('iErr').textContent = '';
   $('bnplDlg').showModal();
 }
@@ -599,6 +609,7 @@ async function saveBnpl(list) {
   $('iOk').disabled = false;
   if (!r.ok) { $('iErr').textContent = r.status === 400 ? 'Check the plan\'s details' : 'Could not save. Check your connection.'; return; }
   applyOp(op); $('bnplDlg').close(); render();
+  if (!r.queued) load(); // payments that arrived since the app opened count straight away
 }
 
 // ---------- Home ----------
@@ -1400,10 +1411,10 @@ $('mBnpl').onclick = e => { const b = e.target.closest('[data-plan]'); if (b) op
 $('mBnplAdd').onclick = () => openBnpl();
 $('iProv').onchange = () => { $('iOtherW').hidden = !!$('iProv').value; if (!$('iProv').value) $('iOther').focus(); };
 $('iOk').onclick = () => {
-  const provider = ($('iProv').value || $('iOther').value).trim(), amount = num($('iAmt').value), count = num($('iCount').value), first = $('iFirst').value;
-  const err = !provider ? 'Type the provider\'s name as it appears on your payments' : !(amount > 0) ? 'Type the amount of each instalment' : !(Number.isInteger(count) && count >= 1 && count <= 36) ? 'The number of instalments is a whole number from 1 to 36' : !/^\d{4}-\d\d-\d\d$/.test(first) ? 'Choose the date of the first instalment' : '';
+  const provider = ($('iProv').value || $('iOther').value).trim(), amount = num($('iAmt').value), count = num($('iCount').value), first = $('iFirst').value, paid = $('iPaid').value.trim() ? num($('iPaid').value) : 0;
+  const err = !provider ? 'Type the provider\'s name as it appears on your payments' : !(amount > 0) ? 'Type the amount of each instalment' : !(Number.isInteger(count) && count >= 1 && count <= 36) ? 'The number of instalments is a whole number from 1 to 36' : !/^\d{4}-\d\d-\d\d$/.test(first) ? 'Choose the date of the first instalment' : !(Number.isInteger(paid) && paid >= 0 && paid <= count) ? `Paid so far is a whole number from 0 to ${count}` : '';
   if (err) { $('iErr').textContent = err; return; }
-  const plan = {id: planEdit || crypto.randomUUID(), provider, amount: Math.round(amount * 100) / 100, count, first, every: $('iEvery').value, note: $('iNote').value.trim() || null};
+  const plan = {id: planEdit || crypto.randomUUID(), provider, amount: Math.round(amount * 100) / 100, count, first, every: $('iEvery').value, paid, note: $('iNote').value.trim() || null};
   saveBnpl(planEdit ? bnpl.map(x => x.id === planEdit ? plan : x) : [...bnpl, plan]);
 };
 $('iDel').onclick = () => { if (confirm('Delete this plan? Its payments stay.')) saveBnpl(bnpl.filter(x => x.id !== planEdit)); };

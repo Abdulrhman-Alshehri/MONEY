@@ -351,17 +351,25 @@ const addMonths = (n: number, k: number) => {
   const d = new Date(n * DAY), y = d.getUTCFullYear(), m = d.getUTCMonth() + k;
   return Math.floor(Date.UTC(y, m, Math.min(d.getUTCDate(), new Date(Date.UTC(y, m + 1, 0)).getUTCDate())) / DAY);
 };
-// Tabby and Tamara plans: the instalments paid are payments to that provider of about the instalment (within 1 riyal),
-// from 3 days before the first one, earliest first. Each payment counts for one plan only. Same as bnplState() in index.html.
+// Tabby and Tamara plans: an instalment is paid by a payment whose merchant or category contains the provider's name
+// (a first instalment paid in a shop shows the shop's name, so its category is what says Tamara), within 1 riyal of the
+// instalment, from 3 days before it falls due, earliest first. Each payment counts for one plan only. `paid` is the
+// number you entered as paid so far: those instalments count without a payment, and the search starts after them, so
+// a payment the app also finds is never counted twice. Same as bnplState() in index.html.
 // deno-lint-ignore no-explicit-any
 function bnplState(plans: any[], rows: any[]) {
   const used = new Set(), out = new Map<string, { paid: number; next: number | null }>();
-  const pays = rows.filter((r) => counts(r) > 0 && r.merchant).sort((a, b) => Date.parse(a.occurred_at ?? a.created_at) - Date.parse(b.occurred_at ?? b.created_at) || (a.created_at < b.created_at ? -1 : 1));
+  const pays = rows.filter((r) => counts(r) > 0).sort((a, b) => Date.parse(a.occurred_at ?? a.created_at) - Date.parse(b.occurred_at ?? b.created_at) || (a.created_at < b.created_at ? -1 : 1));
   for (const p of [...plans].sort((a, b) => (a.first === b.first ? (String(a.id) < String(b.id) ? -1 : 1) : a.first < b.first ? -1 : 1))) {
-    const first = dayOfDate(p.first), key = merchantKey(p.provider);
-    const hits = pays.filter((r) => !used.has(r) && merchantKey(r.merchant).includes(key) && Math.abs(num(r.amount) - num(p.amount)) <= 1 && dayOf(r) >= first - 3).slice(0, p.count);
+    const first = dayOfDate(p.first), key = merchantKey(p.provider), skip = Math.min(p.count, Math.max(0, Math.floor(num(p.paid))));
+    const due = (i: number) => (p.every === '2weeks' ? first + 14 * i : addMonths(first, i));
+    // deno-lint-ignore no-explicit-any
+    const fits = (r: any) => !!key && !used.has(r) && (merchantKey(r.merchant).includes(key) || merchantKey(r.category).includes(key)) && Math.abs(num(r.amount) - num(p.amount)) <= 1;
+    pays.filter((r) => fits(r) && dayOf(r) >= first - 3 && dayOf(r) < due(skip) - 3).slice(0, skip).forEach((r) => used.add(r)); // the ones you entered
+    const hits = pays.filter((r) => fits(r) && dayOf(r) >= due(skip) - 3).slice(0, p.count - skip);
     hits.forEach((r) => used.add(r));
-    out.set(p.id, { paid: hits.length, next: hits.length >= p.count ? null : p.every === '2weeks' ? first + 14 * hits.length : addMonths(first, hits.length) });
+    const paid = skip + hits.length;
+    out.set(p.id, { paid, next: paid >= p.count ? null : due(paid) });
   }
   return out;
 }
@@ -390,7 +398,7 @@ async function limitAlerts(run: Run, today: number) {
 // Due within 2 days: bills the app found (fixed costs) and Tabby or Tamara instalments. As dueSoon() in index.html, a bill
 // paid this month is next due on the same day next month.
 async function billAlerts(run: Run, today: number) {
-  const [b, pl] = await Promise.all([db.from('bills').select('key,label,amount,day'), db.from('bnpl_plans').select('id,provider,amount,count,first,every')]);
+  const [b, pl] = await Promise.all([db.from('bills').select('key,label,amount,day,category'), db.from('bnpl_plans').select('id,provider,amount,count,first,every,paid')]);
   fail(b, pl);
   const bills = b.data ?? [], plans = pl.data ?? [];
   if (!bills.length && !plans.length) return 0;
@@ -401,7 +409,7 @@ async function billAlerts(run: Run, today: number) {
   const providers = plans.map((p) => merchantKey(p.provider));
   let n = 0;
   for (const x of bills) {
-    if (providers.some((k) => x.key.split('|')[0].includes(k))) continue; // the instalment plan reminds about these
+    if (providers.some((k) => k && (x.key.split('|')[0].includes(k) || merchantKey(x.category).includes(k)))) continue; // the plan reminds about these
     const paid = paidNow.has(x.key), mm = paid ? m + 1 : m, dim = new Date(Date.UTC(y, mm + 1, 0)).getUTCDate();
     const due = Math.floor(Date.UTC(y, mm, Math.min(x.day, dim)) / DAY), ahead = due - today;
     if (ahead < 0 || ahead > 2) continue;
@@ -578,15 +586,16 @@ async function handle(req: Request): Promise<Response> {
   }
   // Tabby and Tamara plans you entered. PUT sends the whole set, as for limits; the app makes each plan's id.
   if (action === 'bnpl' && req.method === 'GET') {
-    const { data, error } = await db.from('bnpl_plans').select('id,provider,amount,count,first,every,note').order('first').order('id');
+    const { data, error } = await db.from('bnpl_plans').select('id,provider,amount,count,first,every,paid,note').order('first').order('id');
     return error ? json({ error: error.message }, 500) : json(data);
   }
   if (action === 'bnpl' && req.method === 'PUT') {
     const list = await req.json();
     const okPlan = (p: Record<string, unknown>) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(p?.id)) && typeof p.provider === 'string' && !!p.provider.trim() &&
-      Number(p.amount) > 0 && Number.isInteger(p.count) && Number(p.count) >= 1 && Number(p.count) <= 36 && /^\d{4}-\d\d-\d\d$/.test(String(p.first)) && !isNaN(Date.parse(String(p.first))) && ['month', '2weeks'].includes(String(p.every ?? 'month'));
-    if (!Array.isArray(list) || list.length > 50 || !list.every(okPlan)) return json({ error: 'expected [{id, provider, amount, count, first, every}]' }, 400);
-    const rows = list.map((p) => ({ id: p.id.toLowerCase(), provider: p.provider.trim().slice(0, 40), amount: round2(Number(p.amount)), count: p.count, first: p.first, every: p.every ?? 'month', note: typeof p.note === 'string' && p.note.trim() ? p.note.trim().slice(0, 80) : null }));
+      Number(p.amount) > 0 && Number.isInteger(p.count) && Number(p.count) >= 1 && Number(p.count) <= 36 && /^\d{4}-\d\d-\d\d$/.test(String(p.first)) && !isNaN(Date.parse(String(p.first))) && ['month', '2weeks'].includes(String(p.every ?? 'month')) &&
+      (p.paid == null || (Number.isInteger(p.paid) && Number(p.paid) >= 0 && Number(p.paid) <= Number(p.count)));
+    if (!Array.isArray(list) || list.length > 50 || !list.every(okPlan)) return json({ error: 'expected [{id, provider, amount, count, first, every, paid}]' }, 400);
+    const rows = list.map((p) => ({ id: p.id.toLowerCase(), provider: p.provider.trim().slice(0, 40), amount: round2(Number(p.amount)), count: p.count, first: p.first, every: p.every ?? 'month', paid: p.paid ?? 0, note: typeof p.note === 'string' && p.note.trim() ? p.note.trim().slice(0, 80) : null }));
     if (rows.length) { const { error } = await db.from('bnpl_plans').upsert(rows); if (error) return json({ error: error.message }, 500); }
     const { data: have, error: e1 } = await db.from('bnpl_plans').select('id');
     if (e1) return json({ error: e1.message }, 500);

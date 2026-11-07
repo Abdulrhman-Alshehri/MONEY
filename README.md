@@ -97,7 +97,7 @@ Every payment, newest first, grouped by day. Search matches the merchant, catego
 | Monthly limits | Each limit with this month's spending, amber from 80% and red when over. Set them from estimates: the median of your last 6 complete months, rounded up. Change any, or leave a box empty for no limit. Limits are saved in your database, so the SMS notification can say "640 of 1,500" |
 | Habits | No-spend days this month (rent and bills don't count), Fri–Sat against other days over the last 8 weeks, and small payments you make often with their yearly cost |
 | Every month | Fixed costs: the same merchant and amount about once a month, on about the same day, and what subscriptions cost a year. A changed price shows "was X". Food, groceries, transport, shopping and fuel are never treated as fixed costs |
-| Tabby & Tamara | Each plan you add: instalments paid of the total, the next due date and what's left. Payments to the provider of that amount count as paid when they arrive. Add fills in a new plan from your latest Tabby or Tamara payment; check the number of instalments. Tap a plan to change or delete it |
+| Tabby & Tamara | Each plan you add: instalments paid of the total, the next due date and what's left. A payment of that amount counts as paid when its merchant or its category is the provider, so a first instalment paid in a shop counts once you give it the Tamara or Tabby category. If one is still missing, set **Paid so far** on the plan. Add fills in a new plan from your latest Tabby or Tamara payment; check the number of instalments. Tap a plan to change or delete it |
 | Balance | From bank statements only, so it ends at the latest statement. After 35 days it asks for a newer one |
 | Notifications | Turn them on for this phone, send a test, or turn them off. See "Notifications" below |
 | Backup | When the latest weekly copy was made and how many payments it holds |
@@ -283,7 +283,7 @@ Change it in all three places:
 - **SMS formats:** checked against real SMS for online and POS purchases, salary, outgoing and incoming transfers, cash withdrawal, cash deposit and POS refund. Salary written as رواتب without a transfer is still a guess.
 - **Shop names:** statements often have location labels or no shop name for online purchases, so some merchants are generic until you rename them. A generic label such as "Online: Food" can cover several shops, so rename those one payment at a time.
 - **Alerts are hourly,** and bill reminders use the fixed costs the app last found, so open the app now and then.
-- **Instalment plans** count payments whose merchant contains the provider's name, within 1 riyal of the instalment.
+- **Instalment plans** count payments whose merchant or category contains the provider's name, within 1 riyal of the instalment. For anything else, set "Paid so far".
 - **Statement upload:** there's no upload in the dashboard; imports run on a PC.
 - **Device time:** displayed times are always Riyadh time.
 - **Interface:** English only.
