@@ -202,6 +202,29 @@ Type the header on the English keyboard. To debug, temporarily add a **Show Resu
 
 4. Optional, a notification after each payment: add **Get Dictionary Value** (key `notice`, from Contents of URL), then **If** (Dictionary Value has any value) with **Show Notification** (Dictionary Value) inside it. It reads like "Jahez 45.50 · Food & Cafes: 410 this month · 3,240 total": the payment, what you've spent in its category this month, and all your spending this month. Login codes return no notice, so they stay silent.
 
+5. Optional, keep SMS that arrive without internet. SMS come in over the phone network even when there's no data (abroad with roaming off, or a weak signal), but the Shortcut needs internet to send them, so without this they're missing until a statement import fills them in. The fix saves each SMS in a folder first, deletes it only once the server has it, and sends what's waiting when the connection is back. If your phone is in Arabic, search the actions by one word: folder مجلد, file ملف, dictionary قاموس, date تاريخ, random عشوائي, repeat تكرار, notification إشعار, shortcut اختصار.
+
+   **a. A shortcut named "Send queued SMS"** (Shortcuts > +). First make a folder named `SpendingQueue` in the Files app, in iCloud Drive › Shortcuts.
+   1. **Get Contents of Folder**: SpendingQueue.
+   2. **Repeat with Each** item in Folder Contents, and inside it:
+      - **Get Contents of URL**: the URL above, Method POST, header `x-api-key` = your SMS key, Request Body: File, set to Repeat Item.
+      - **Get Dictionary Value**: `ok` in Contents of URL.
+      - **If** Dictionary Value has any value: **Delete Files** with Repeat Item (Confirm Before Deleting off), then the notice steps from step 4.
+      - **Otherwise**: **Get Dictionary Value** `error` in Contents of URL, then **Show Notification** "SMS waiting: " and that value. The file stays and is sent next time.
+
+   Run it once by hand, so iOS asks for its permissions now instead of failing quietly in the background.
+
+   **b. The SMS automation**, in place of the Get Contents of URL in step 3 and the notice in step 4:
+   1. **If** Shortcut Input has any value, and inside it:
+   2. **Format Date**: Current Date, Custom format `yyyyMMdd-HHmmss`. Then **Random Number** between 1000 and 9999.
+   3. **Dictionary** with two text keys: `text` = Shortcut Input's Content, and `id` = `sms-`, the Formatted Date, `-`, the Random Number.
+   4. **Save File**: the Dictionary, Ask Where to Save off, Destination Path `SpendingQueue/`, then the same id and `.json`.
+   5. **Run Shortcut**: Send queued SMS.
+
+   **c. A second automation**: Wi-Fi › Any Network › When Joining, Run Immediately, with **Run Shortcut**: Send queued SMS. Every new bank SMS also sends whatever is waiting, so this only matters for coming back online with no new SMS.
+
+   Sending the same SMS twice is safe: the server keeps each `id` once and answers `duplicate` the second time. A wrong or revoked key doesn't lose SMS either: they wait in the folder, with a notification, until the key is fixed.
+
 ### 4. Home Screen
 
 Open the site in Safari, enter the token, then choose Share > Add to Home Screen.
@@ -263,6 +286,7 @@ Change it in all three places:
 | Row has no amount or merchant | A new SMS format | Add the format to `parse()`; see [AGENTS.md](AGENTS.md) |
 | Row missing from totals | `kind` is `unknown`, or it's excluded | Check the function's parsing and the payment's settings |
 | Same payment twice | A test message sent again | Tap it and delete it |
+| "SMS waiting" notifications | The queue can't reach the server: no internet, or a wrong key in Send queued SMS | They're sent by themselves once you're online; if it says `unauthorized`, put a new SMS key in the shortcut |
 | Old dashboard after an update | Netlify isn't updated, or the old page is still open | Check the Deploys page, then fully close and reopen the app |
 | Dashboard keeps asking for the token | Wrong or changed token | Enter the current token |
 | Old payments disappear | The deployed function is older than `index.ts` and stops at 1000 rows | Redeploy `sms-ingest` |

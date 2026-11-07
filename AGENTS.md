@@ -34,7 +34,7 @@ The complete technical reference. Read [README.md](README.md) first for what the
 | Database | Supabase Postgres | Project ref is in the `API` constant in `index.html` |
 | Secret | `APP_TOKEN` (the old token) in Supabase function secrets | Value is never in the repo. `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are provided by Supabase |
 | Sign-in | Face ID passkeys in `passkeys`; device keys and Face ID sessions in `api_keys`, as hashes | See "Who can call the API" |
-| SMS input | iOS Shortcuts automation on the user's phone | Agents can't see or change it |
+| SMS input | iOS Shortcuts automation on the user's phone | Agents can't see or change it. With the optional queue (README, step 5) each SMS is saved to `iCloud Drive/Shortcuts/SpendingQueue` with an `id` and deleted once the server answers `ok`, so SMS that arrive offline are sent later and resends are deduplicated by `sms_id` |
 | Widgets | `widget.js` in the Scriptable app on the phone | Calls `?action=summary`; the token, salary and saving are in the iPhone Keychain |
 | Scheduler | `pg_cron` job `spending-tick`, 7 minutes past every hour | Calls `?action=tick` through `pg_net` with a `cron` key kept in Vault as `cron_key` |
 | Push | Web Push sent by the function; the VAPID key pair is in `app_settings` | iPhone needs the Home Screen app and iOS 16.4 or later |
