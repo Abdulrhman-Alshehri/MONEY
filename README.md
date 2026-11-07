@@ -23,16 +23,17 @@ A personal spending tracker for iPhone. Every SNB-AlAhli payment SMS is saved au
        |
        v
  iOS Shortcuts automation      Dashboard PWA (Netlify)      SNB PDF statements
- (message contains "SAR")      (Home Screen app)            (tools/, run on a PC)
-       |                              |                            |
-       | POST text                    | GET, PATCH, DELETE         | POST ?action=import
-       v                              v                            v
+ (message contains "SAR")      (Home Screen app)            (run on a PC or in a cloud session)
+       |                              |       ^                    |
+       | POST text                    | API   | push notifications | POST ?action=import
+       v                              v       |                    v
  +-----------------------------------------------------------------------+
- |  Supabase Edge Function: sms-ingest  (checks the x-api-key token)     |
+ |  Supabase Edge Function: sms-ingest  (checks the x-api-key key)       |
  +-----------------------------------------------------------------------+
-       |
-       v
- Supabase Postgres: payments, merchant_rules (no public access)
+       |                                      ^
+       v                                      | every hour: ?action=tick
+ Supabase Postgres (no public access)    pg_cron scheduler: alerts and the weekly backup
+ Storage bucket "backups" (private)
 ```
 
 Why it's built this way:
@@ -46,11 +47,11 @@ Why it's built this way:
 | Path | What it is |
 |---|---|
 | `index.html` | The whole dashboard: HTML, CSS and JavaScript. No build step or libraries |
-| `sw.js` | Service worker: uses the network first and falls back to cache when offline |
+| `sw.js` | Service worker: uses the network first, falls back to cache when offline, and shows push notifications |
 | `widget.js` | Scriptable widget for the Home Screen and Lock Screen. It holds no secrets: the token and plan stay in the iPhone Keychain |
 | `manifest.json`, `icon.svg` | Home Screen name and icon |
 | `index.ts` | Backend (the `sms-ingest` function): SMS parsing, categories and the API |
-| `schema.sql` | Database tables and indexes |
+| `schema.sql` | Database tables and indexes, the backup bucket and the hourly scheduler |
 | `Stmt.cs` | Reads SNB statement PDFs without needing any PDF software |
 | `extract.ps1` | Runs the reader and checks every row against the running balance |
 | `import.ps1` | Turns extracted rows into payments and uploads them. Dry run by default |
@@ -71,10 +72,10 @@ Three tabs: **Home**, **Payments** and **Months**. Months are calendar months in
 | Comparison | Against the month before, up to the same day: ▲ more, ▼ less, or "about the same" when the difference is under 100 SAR or 5%. **Hidden when either month is missing days**, because missing SMS would look like saving. That includes a few empty days at the start of a month when they end a longer gap |
 | Warning | Missing days next to the total, or "Last payment was …" when nothing has arrived for 3 days |
 | Chart | This month's running total (blue) against last month's (grey) |
-| Left this month | With a savings plan: what's left after saving, spending and money sent to people, and how much that is a day once bills that usually come later this month are held back. A past month shows how it ended against the plan |
+| Left this month | With a savings plan: what's left after saving, spending and money sent to people, and how much that is a day once bills and Tabby or Tamara instalments that usually come later this month are held back. A past month shows how it ended against the plan |
 | Balance | Tap "Add your balance" and type what your bank app shows. It then moves with every payment after that ("Balance about 3,240"). Tap it to correct it any time. It's kept only on this phone |
 | Recap | In the first 5 days of a month, last month in one card: the total against usual, the biggest category changes and new places. Tap × to dismiss it |
-| Heads-up | At most one, current month only, in this order: "Salary is in, move X to savings"; a possible duplicate or unrecognised SMS from the last 7 days (tap it to open Review); a category at 80% of its limit or over it (a category of fixed costs, such as rent, only when it goes over); a warning when spending at this pace leaves less than your monthly saving; a subscription that changed price or is new; an unusually big payment from the last 3 days; a category far above its usual pace; fixed costs due in the next 7 days |
+| Heads-up | At most one, current month only, in this order: "Salary is in, move X to savings"; a possible duplicate or unrecognised SMS from the last 7 days (tap it to open Review); a category at 80% of its limit or over it (a category of fixed costs, such as rent, only when it goes over); a warning when spending at this pace leaves less than your monthly saving; a subscription that changed price or is new; an unusually big payment from the last 3 days; a category far above its usual pace; fixed costs and instalments due in the next 7 days |
 | Where it went | Top 4 categories plus Other, with their limit if set ("of 1,500"). Tap one for its page: this month against the limit and usual, the last 9 months, and the top places, with buttons for its payments, its limit and renaming it |
 | Latest or Biggest | The last 5 payments for the current month, or the 5 biggest for a past month. Tap one to edit it |
 
@@ -96,7 +97,10 @@ Every payment, newest first, grouped by day. Search matches the merchant, catego
 | Monthly limits | Each limit with this month's spending, amber from 80% and red when over. Set them from estimates: the median of your last 6 complete months, rounded up. Change any, or leave a box empty for no limit. Limits are saved in your database, so the SMS notification can say "640 of 1,500" |
 | Habits | No-spend days this month (rent and bills don't count), Fri–Sat against other days over the last 8 weeks, and small payments you make often with their yearly cost |
 | Every month | Fixed costs: the same merchant and amount about once a month, on about the same day, and what subscriptions cost a year. A changed price shows "was X". Food, groceries, transport, shopping and fuel are never treated as fixed costs |
+| Tabby & Tamara | Each plan you add: instalments paid of the total, the next due date and what's left. Payments to the provider of that amount count as paid when they arrive. Add fills in a new plan from your latest Tabby or Tamara payment; check the number of instalments. Tap a plan to change or delete it |
 | Balance | From bank statements only, so it ends at the latest statement. After 35 days it asks for a newer one |
+| Notifications | Turn them on for this phone, send a test, or turn them off. See "Notifications" below |
+| Backup | When the latest weekly copy was made and how many payments it holds |
 | Categories | Manage: rename a category, merge it into another (type an existing name), or delete it (its payments move to Uncategorized). It changes past payments, rules and limits. Transfers, Savings, Income, Cash deposit and Uncategorized are built in and can't be changed |
 
 ### Editing a payment
@@ -110,6 +114,18 @@ Tap a payment to:
 - **Add a note.**
 - **Not count it**, for things like a duplicate you want to keep.
 - **Delete it.** This is permanent, and it's asked to be confirmed first.
+
+### Notifications
+
+On Months, tap **Turn on notifications** and allow them. The iPhone shows notifications only for the app opened from the Home Screen, on iOS 16.4 or later. You get:
+
+- **Thursday evening:** your week. Bills are listed apart, and day-to-day spending is compared with your usual week ("Day to day 790, 12% less than your usual week").
+- **The 1st of the month:** last month against usual, the biggest changes and new places, like the recap card.
+- **Two days before a bill or an instalment:** "STC 230 is due Saturday", "Tabby 95.50 is due Saturday".
+- **Limits:** when a category reaches 80% of its limit, and when it goes over. A category of fixed costs, such as rent, only when it goes over.
+- **No SMS for 3 days:** in case the Shortcut has stopped.
+
+Each one is sent once. Alerts are checked every hour, so a limit crossed at 2 pm is announced by about 3 pm; the notification after each SMS is still instant. Notifications show amounts, so if you don't want them on the Lock Screen, set Settings > Notifications > Spending > Show Previews to When Unlocked.
 
 ### Savings plan
 
@@ -145,8 +161,8 @@ Things to keep in mind:
 
 ### 1. Database and backend
 
-1. Create a Supabase project and run `supabase/schema.sql` in the SQL editor.
-2. Deploy `supabase/functions/sms-ingest/index.ts` as a function named `sms-ingest`, **with JWT verification off**, because the function does its own token check.
+1. Create a Supabase project and run `schema.sql` in the SQL editor, after putting the project's ref in the scheduler's URL at the end. It creates the tables, the private `backups` bucket and the hourly scheduler with its own key.
+2. Deploy `index.ts` as a function named `sms-ingest`, **with JWT verification off**, because the function does its own token check.
 3. Under Edge Functions > Secrets, add `APP_TOKEN` with a long random value of letters and numbers.
 
 ### 2. Dashboard
@@ -210,7 +226,7 @@ $env:CONFIRM_IMPORT = "yes"
 .\import.ps1
 ```
 
-Overlapping statements are safe, because rows already imported are skipped. **Rows that SMS already saved are not matched, so they'd be counted twice.** See "Statement and SMS overlap" in [AGENTS.md](AGENTS.md).
+Overlapping statements are safe, because rows already imported are skipped. Rows that SMS already saved are matched to those SMS rows instead of being added again, and the dry run's answer says how many were matched. See "Statement and SMS overlap" in [AGENTS.md](AGENTS.md).
 
 ### Change the token
 
@@ -241,6 +257,8 @@ Change it in all three places:
 | Rent isn't in Spent | The rent transfer is still in Transfers | See "Rent paid by transfer" |
 | Home says the last payment was days ago | The Shortcut stopped sending | Check the automation, then import a statement for the missing days |
 | Project not responding | Free Supabase projects pause when inactive | Restore it in the Supabase dashboard |
+| No notifications | Not turned on for this phone, the app wasn't opened from the Home Screen, or a Focus mode hides them | On Months, check it says "On for this phone" and tap Send a test. Then check Settings > Notifications > Spending |
+| Notifications stopped after a while | iOS dropped the subscription | Turn notifications off and on again on Months |
 
 ## Security and privacy
 
@@ -251,6 +269,9 @@ Change it in all three places:
 - **Statement imports are reduced.** Raw descriptions, national IDs, account numbers and IBANs aren't stored. Names of people you transfer with are kept, because you need them to see where money went.
 - **SMS text is stored as received** in `raw_text`, including the last digits of cards and accounts. The API doesn't return it.
 - **Login codes aren't saved.** Messages that look like one-time codes are dropped.
+- **The scheduler has its own key.** It can only run the scheduled jobs. It was made inside the database and is kept in Supabase Vault; only its hash is in the `api_keys` table.
+- **Notifications are encrypted** for your phone, so Apple's push service can't read them. The key that signs them stays in the database. They do show amounts on the Lock Screen unless you hide previews.
+- **Backups stay in Supabase:** a private bucket that only the function can read. They include SMS text, as the database does.
 
 ## Limitations
 
@@ -259,9 +280,10 @@ Change it in all three places:
 - **Fixed costs** must repeat with exactly the same amount, so a phone bill that changes every month isn't listed under Every month.
 - **Rent across a month boundary:** paying on the 31st instead of the 1st puts two rents in one month, and the comparison jumps by that amount.
 - **One account:** built for one person, one SNB account and SAR.
-- **SMS formats:** only online purchase, POS purchase and outgoing transfer messages have been checked against real SMS.
-- **Shop names:** statements often have location labels or no shop name for online purchases, so some merchants are generic until renamed in a future version.
-- **Merchant rename:** not available in the dashboard yet.
+- **SMS formats:** checked against real SMS for online and POS purchases, salary, outgoing and incoming transfers, cash withdrawal, cash deposit and POS refund. Salary written as رواتب without a transfer is still a guess.
+- **Shop names:** statements often have location labels or no shop name for online purchases, so some merchants are generic until you rename them. A generic label such as "Online: Food" can cover several shops, so rename those one payment at a time.
+- **Alerts are hourly,** and bill reminders use the fixed costs the app last found, so open the app now and then.
+- **Instalment plans** count payments whose merchant contains the provider's name, within 1 riyal of the instalment.
 - **Statement upload:** there's no upload in the dashboard; imports run on a PC.
 - **Device time:** displayed times are always Riyadh time.
 - **Interface:** English only.

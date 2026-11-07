@@ -23,7 +23,7 @@ The complete technical reference. Read [README.md](README.md) first for what the
 - Delete test rows you create in the live database.
 - Reconcile any statement import against the PDF's page 1 before reporting success.
 - Report gaps in the data along with totals.
-- Keep `supabase/functions/sms-ingest/index.ts` and the deployed function identical.
+- Keep `index.ts` and the deployed function identical.
 
 ## System map
 
@@ -35,13 +35,16 @@ The complete technical reference. Read [README.md](README.md) first for what the
 | Secret | `APP_TOKEN` in Supabase function secrets | Value is never in the repo. `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are provided by Supabase |
 | SMS input | iOS Shortcuts automation on the user's phone | Agents can't see or change it |
 | Widgets | `widget.js` in the Scriptable app on the phone | Calls `?action=summary`; the token, salary and saving are in the iPhone Keychain |
+| Scheduler | `pg_cron` job `spending-tick`, 7 minutes past every hour | Calls `?action=tick` through `pg_net` with a `cron` key kept in Vault as `cron_key` |
+| Push | Web Push sent by the function; the VAPID key pair is in `app_settings` | iPhone needs the Home Screen app and iOS 16.4 or later |
+| Backups | Storage bucket `backups` (private) | Every Thursday; the last 12 are kept |
 | Statement import | `Stmt.cs`, `extract.ps1`, `import.ps1` on Windows PowerShell 5.1, or `stmt.py` and `stmt_import.py` on Python 3 | No Node, Python or PDF tools were available on the user's laptop. The Python port runs in a cloud session |
 
 ## API
 
 Base URL: `https://<project-ref>.supabase.co/functions/v1/sms-ingest`
 
-Every request needs `x-api-key: <APP_TOKEN>`, or it gets `401 {"error":"unauthorized"}`. Before comparing, both values are normalized: whitespace and invisible direction characters are removed, and Arabic digits are converted. CORS allows all origins, which is acceptable because auth uses an explicit header and not cookies.
+Every request needs `x-api-key`: `APP_TOKEN` for full access, or a key in `api_keys`, which keeps only the key's SHA-256 and a scope. Anything else gets `401 {"error":"unauthorized"}`. Before comparing, the key and `APP_TOKEN` are normalized: whitespace and invisible direction characters are removed, and Arabic digits are converted. A `cron` key can only call `?action=tick`; anything else with a key that isn't full access gets `403 {"error":"forbidden"}` (the `read` and `ingest` scopes are for the device keys still to come). CORS allows all origins and `GET, POST, PUT, PATCH, DELETE`, which is acceptable because auth uses an explicit header and not cookies. Errors come back as JSON with the CORS headers; a body that isn't valid JSON gets `400 {"error":"invalid JSON"}`.
 
 ### POST (no query): ingest an SMS
 
@@ -110,9 +113,32 @@ Returns every payment as an array, without `raw_text` or `ref`. Supabase caps ea
 
 Permanently deletes one row. Returns `{"ok":true}`.
 
+### POST ?action=tick: run the scheduled jobs
+
+Called by `pg_cron` every hour with the `cron` key; see "Scheduled jobs and notifications". Returns `{"ok":true,"done":{"limits":1,"bills":0}}`: each job that ran, with the number of notifications sent, or the backup's details. With the full key, `&force=<job>` (`backup`, `limits`, `bills`, `recap`, `weekly`, `stale` or `all`) runs that job now and returns its messages as `"messages":[{"title","body","tag"}]` without sending or recording them. A forced backup is a real backup.
+
+### Push: GET ?action=push-key, POST ?action=subscribe, ?action=unsubscribe and ?action=push-test
+
+- `push-key`: `{"key":"<base64url>"}`, the public VAPID key the app subscribes with. The key pair is made on first use and kept in `app_settings`.
+- `subscribe`: the browser's `PushSubscription.toJSON()`, `{endpoint, keys: {p256dh, auth}}`. The endpoint must be on Apple's, Google's, Mozilla's or Microsoft's push service, so the function never posts anywhere else. Subscribing again updates the row.
+- `unsubscribe`: `{"endpoint":"..."}`.
+- `push-test`: one message to every device. Returns `{"ok":true,"sent":1,"errors":[]}`; an error names the push service, its status and its reply, such as `web.push.apple.com 410 {"reason":"Unregistered"}`.
+
+### GET ?action=status
+
+`{"last_backup":{"at":"...","file":"2026-11-26.json.gz","payments":1520,"bytes":96000},"devices":1}` for the Months page.
+
+### PUT ?action=bills
+
+The app's fixed costs, sent whole when they change: `[{"key":"stc|230.00","label":"STC","amount":230,"day":3,"category":"Bills & Telecom"}]`. `key` is the app's `fixedKey()`. Bills left out are removed. Returns `{"ok":true,"bills":n}`.
+
+### GET and PUT ?action=bnpl: Tabby and Tamara plans
+
+`[{"id":"<uuid>","provider":"Tabby","amount":95.50,"count":4,"first":"2026-09-15","every":"month","note":null}]`. PUT sends the whole set, as for limits. The app makes each `id`, so a plan saved offline keeps it. `every` is `month` or `2weeks`, and `count` is 1 to 36.
+
 ## Database
 
-The exact definition is in `supabase/schema.sql`. RLS is enabled with no policies on both tables; the function uses the service role. The Supabase advisor's "RLS enabled, no policy" notice is therefore expected.
+The exact definition is in `schema.sql`. RLS is enabled with no policies on every table; the function uses the service role. The Supabase advisor's "RLS enabled, no policy" notice is therefore expected.
 
 ### payments
 
@@ -155,6 +181,30 @@ Neither has a database constraint, so new values won't error. The frontend must 
 ### category_limits
 
 `category` (primary key), `monthly` (above 0), `updated_at`. A calendar month's limit for one category, set in the app.
+
+### api_keys
+
+`id`, `name`, `scope` (`full`, `read`, `ingest` or `cron`), `hash` (SHA-256 of the key in hex, unique), `created_at`, `last_used_at`, `revoked_at` (set to turn a key off). So far only the scheduler's `cron` key exists. It was made inside the database: the key itself is only in Vault, as `cron_key`.
+
+### push_subscriptions
+
+`endpoint` (primary key), `p256dh`, `auth`, `created_at`, `last_ok_at`. A row the push service answers with 404 or 410 is deleted.
+
+### app_settings
+
+`key` (primary key), `value` (jsonb), `updated_at`. `vapid` holds the push key pair; its private key, a JWK, never leaves the database and the function. `last_backup` holds the latest backup's details.
+
+### notify_log
+
+`key` (primary key), `created_at`. One row per alert sent, so each goes out once: `weekly:2026-11-26`, `recap:2026-11`, `limit80:Food & Cafes:2026-11:1500`, `limit100:...`, `bill:stc|230.00:2026-12`, `bnpl:<plan id>:2`, `stale:2026-11-22`, and `backup:2026-11-26` for the backup.
+
+### bills
+
+`key` (primary key, `fixedKey()`), `label` (the merchant, or the category for a transfer, so rent never shows the landlord's name), `amount`, `day`, `category`, `updated_at`. Written only by `PUT ?action=bills`.
+
+### bnpl_plans
+
+`id`, `provider`, `amount` (each instalment), `count`, `first` (date of the first instalment), `every`, `note`, `created_at`.
 
 ## SMS pipeline
 
@@ -334,6 +384,30 @@ Without Windows (a cloud session), the Python port does the same with the same r
 
 Compiling `Stmt.cs` with `Add-Type` limits it to C# 5 syntax. Scripts need a UTF-8 BOM for Windows PowerShell to read the Arabic correctly, so keep it when editing.
 
+## Scheduled jobs and notifications
+
+`pg_cron` runs `spending-tick` at 7 minutes past every hour (UTC; Riyadh is always 3 hours ahead). It posts to `?action=tick` through `pg_net`, with a 60-second timeout and the `cron_key` from Vault. `tick()` then runs whatever is due, in Riyadh time:
+
+| Job | When (Riyadh) | Once per | What it does |
+|---|---|---|---|
+| `backup` | Thursday 03:00–08:59 | day | See "Backups" below |
+| `limits` | Every hour, 09:00–22:59 | month, category and limit | "Food & Cafes: 1,345 of 1,500" at 80%, "Groceries is over its limit" when over. A category that is 90% fixed costs this month only alerts when over, as `mostlyFixed()`. A raised limit can alert again |
+| `bills` | 10:00–21:59 | bill and due month, or instalment | "STC 230 is due Saturday" for a bill due within 2 days and not paid this month (a bill paid this month is due next month, as in `dueSoon()`), and "Tabby 95.50 is due Saturday", "Instalment 3 of 4" |
+| `recap` | The 1st, 10:00–21:59 | month | Last month against usual, the biggest category changes and new places, as `recapCard()` |
+| `weekly` | Thursday 20:00–23:59 | week | The last 7 days. Bills are listed apart, and day-to-day spending is compared with the average of the 8 weeks before that have no missing days (at least 3 needed), so a week with rent in it doesn't look like a splurge |
+| `stale` | 21:00–23:59 | quiet spell | "No payments for 4 days" once nothing has arrived for 3 days |
+
+- **Once only.** An alert claims its `notify_log` key before sending and gives it back if no device got it, so a later hour in the window tries again. The windows are several hours long, so one missed run loses nothing.
+- **No devices, no work.** Alert jobs run only while `push_subscriptions` has a row. The backup always runs.
+- **Mirrors of the app.** `limitAlerts()` follows `mostlyFixed()`, `billAlerts()` follows `dueSoon()`, `bnplState()` is the same as `bnplState()` in `index.html`, `recapPush()` follows `recapCard()`, and `weekly()` leaves out fixed costs as `habits()` does. Change both together.
+- **Bills come from the app.** The server doesn't detect fixed costs itself: after each online load the app sends `fixedCosts()` to `bills` if the list changed. A bill whose merchant contains a plan's provider gets no reminder of its own; the plan's reminder covers it.
+- **Messages** are `{title, body, tag}`, encrypted for each device (RFC 8291, aes128gcm) and signed with the VAPID key (RFC 8292), with WebCrypto only. The VAPID contact is the site URL in `SITE`, never a personal address. A message replaces an older one with the same tag.
+- **Checking on real data:** `POST ?action=tick&force=all` with the full key returns every message without sending anything.
+
+### Backups
+
+Every Thursday morning `backup()` saves `payments` (with `raw_text`), `merchant_rules`, `merchant_aliases`, `category_limits`, `bills` and `bnpl_plans` as one gzipped JSON file, `backups/YYYY-MM-DD.json.gz`, and deletes all but the newest 12. Keys, push devices, settings and the alert log are left out on purpose. To restore, download the file from Storage in the Supabase dashboard: it holds one array of rows per table, to insert with SQL. Ask the user before restoring over live data.
+
 ## Frontend
 
 Everything is in `index.html`.
@@ -346,7 +420,7 @@ Everything is in `index.html`.
 | `spend(p)` | **The single definition of what counts as spending.** Transfers out count once their category isn't `Transfers` or `Savings` |
 | `getPlan()`, `openPlan()` | The savings plan, kept in `localStorage` under `plan` on the phone |
 | `savedByMonth()`, `goalCard()` | Money moved to savings per month (transfers marked `Savings`, minus money sent back from the same account) and the goal card on Months |
-| `planLine()` | "X left · Y a day" on Home. Uses `outflow()`: spending plus money sent to people |
+| `planLine()` | "X left · Y a day" on Home. Uses `outflow()`: spending plus money sent to people. Bills and instalments still due this month are held back from the daily figure |
 | `render()` | Shows the active tab: `renderHome()`, `renderPay()` or `renderMonths()` |
 | `totals()`, `cumulative()` | Category totals and running totals by day, both from `spend()` |
 | `paceChart()`, `balChart()` | SVG charts: this month against last month, and the statement balance |
@@ -367,6 +441,10 @@ Everything is in `index.html`.
 | `recapCard()` | Last month's recap on Home in the first 5 days; dismissing it stores the month in `recapSeen` |
 | `openCats()`, `editCat()`, `catAction()` | The category manager (`?action=category`). `BUILT_IN` categories can't be changed, because the rules depend on their names |
 | `act()`, `flush()`, `applyOp()`, `outbox()` | Offline. Each load keeps a copy of the payments in Cache Storage (`data-v1`), used when the server can't be reached. Edits go through `act()`: on no connection or a 5xx they're queued in `localStorage` `outbox`, applied to the copy at once, and sent in order before the next load or on the `online` event. Queued changes are applied again on top of a cached copy |
+| `syncBills()` | Sends `fixedCosts()` to `?action=bills` after an online load, only when the list changed (`localStorage` `billsSent`) |
+| `bnplState()`, `instalmentsDue()`, `planCovers()`, `bnplGuess()`, `renderBnpl()`, `openBnpl()`, `saveBnpl()` | Tabby and Tamara on Months. A plan's instalments paid are payments whose merchant contains the provider, within 1 riyal of the instalment, from 3 days before the first, earliest first, each counted for one plan only: the same rules as `bnplState()` in `index.ts`. Unpaid instalments this month are held back in `planLine()` and `forecast()` and listed in `dueSoon()`; a fixed cost that a plan covers is left out there. A new plan is filled in from the latest Tabby or Tamara payment no plan has claimed |
+| `renderNotify()`, `turnOnPush()`, `testPush()`, `turnOffPush()`, `syncPush()` | Notifications on Months. The server's key is fetched when the button shows, so one tap asks permission and subscribes straight away, as iOS requires. A subscribed phone sends its subscription again once a day (`pushAt`) in case the server dropped it |
+| `loadStatus()`, `renderBackup()` | The backup line on Months, from `?action=status` |
 
 ### Conventions
 
@@ -374,7 +452,8 @@ Everything is in `index.html`.
 - `counts()` in `index.ts` repeats `spend()` for the summary endpoint, and its `gaps()` repeats the dashboard's gap rules. Change both together.
 - Fixed costs skip `EVERYDAY` categories (food, groceries, transport, shopping, fuel), so a coffee at the same price a month apart isn't a bill.
 - **Personal numbers stay on the phone.** The savings plan (salary, monthly saving, goal) lives in `localStorage` under `plan`, and the typed balance under `balance`. Never put them in code, tests, docs or the database: the repo is public. Category limits are the exception, by the user's choice: they live in `category_limits` so the SMS notice and push alerts can use them.
-- Other `localStorage` keys: `tok`, `dupOk`, `monthsMode`, `recapSeen`, `limits` (a copy for offline use), `outbox`, `dataAt`.
+- Other `localStorage` keys: `tok`, `dupOk`, `monthsMode`, `recapSeen`, `limits` and `bnpl` (copies for offline use), `outbox`, `dataAt`, `billsSent`, `pushKey`, `pushAt`, `status`.
+- `bnplState()` exists in both files with the same rules, and so does the recap's list of new places, which leaves out transfers so a person's name never appears in a notification.
 - Calendar months in Riyadh time. "Today" is the real date, not the latest payment.
 - Each number needs something to compare with: Home compares with last month up to the same day. Differences under 100 SAR or 5% read "about the same", and there's no ▲/▼ verdict when either month is missing days.
 - Missing days are shown next to the total they affect (project rule).
@@ -400,7 +479,7 @@ On `localhost`, `API` becomes `/api`, so you can test without touching real data
 
 ### Service worker
 
-`sw.js` is network first and caches only same-origin `GET` requests. API calls go straight to the network. Change the cache name when the list of precached files changes.
+`sw.js` is network first and caches only same-origin `GET` requests. API calls go straight to the network. Change the cache name when the list of precached files changes. It shows every push as a notification, because iOS stops delivering to a web app that receives pushes without showing them, and a tap opens the app or brings it forward. A new version takes over at once (`skipWaiting`, `clients.claim`), so the push handler that runs is always the latest.
 
 ## Deployment
 
@@ -408,9 +487,10 @@ On `localhost`, `API` becomes `/api`, so you can test without touching real data
 |---|---|---|
 | Frontend | Push if Netlify is linked to the repo; otherwise the site's Deploys page | On deploy |
 | Function | Supabase CLI or MCP `deploy_edge_function`, name `sms-ingest`, `verify_jwt` false | **Immediately, and SMS depends on it** |
-| Schema | Supabase migration, then update `supabase/schema.sql` | Immediately |
+| Schema | Supabase migration, then update `schema.sql` | Immediately |
+| Scheduler | SQL: `cron.schedule('spending-tick', ...)`, as at the end of `schema.sql` | Immediately |
 
-The site publishes the repo root, so `tools/`, `supabase/` and the docs are also reachable on the site. They contain no secrets, and the repo is public anyway.
+The site publishes the repo root, so the statement tools, `index.ts`, `schema.sql` and the docs are also reachable on the site. They contain no secrets, and the repo is public anyway.
 
 Before deploying the function, send a made-up SMS and delete the row afterward. Live test command:
 
@@ -418,6 +498,8 @@ Before deploying the function, send a made-up SMS and delete the row afterward. 
 $body = [Text.Encoding]::UTF8.GetBytes("<raw test SMS>")
 Invoke-RestMethod -Method Post -Uri $env:SMS_URL -Headers @{"x-api-key"=$env:APP_TOKEN} -ContentType "text/plain; charset=utf-8" -Body $body
 ```
+
+After deploying, check the scheduled jobs on real data with `POST ?action=tick&force=all`: it returns every message and sends nothing (it does make a real backup).
 
 ## Known issues
 
@@ -433,6 +515,10 @@ Invoke-RestMethod -Method Post -Uri $env:SMS_URL -Headers @{"x-api-key"=$env:APP
 | Savings plan and balance are per phone | A new phone or a cleared app starts without them | Store them server-side if more than one device is used |
 | Live balance is an estimate | It drifts when an SMS never arrives, or for money that moves without one | Correct it in the app; a statement import fills missed SMS |
 | Statement and SMS amounts assume SAR | Foreign amounts rely on the bank's conversion | Fine unless SMS formats differ |
+| Notifications show amounts | They can be read on the Lock Screen | iOS: Settings > Notifications > Spending > Show Previews: When Unlocked |
+| Alerts run hourly | A limit crossed at 14:10 is announced by 15:07; the SMS notice is instant | Fine for summaries and reminders |
+| Bills for reminders come from the app | A new fixed cost reaches the server only after the app is opened | Open the app now and then |
+| Instalments are matched by name and amount | A plan counts payments whose merchant contains the provider's name, within 1 riyal | Edit the plan if the name on the SMS differs |
 
 ## Ideas not built yet
 

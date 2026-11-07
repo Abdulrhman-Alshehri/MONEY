@@ -1,7 +1,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 
 const db = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'content-type, x-api-key', 'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS' };
+const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'content-type, x-api-key', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
 
 const norm = (s: string) => s
@@ -225,24 +225,378 @@ function notice(p: any, category: string, s: any) {
   }
 }
 
-Deno.serve(async (req) => {
+// ---------- keys ----------
+const sha256hex = async (s: string) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)))].map((b) => b.toString(16).padStart(2, '0')).join('');
+// What a request may do: everything with APP_TOKEN, or the scope of a key in api_keys (kept as a SHA-256 hash only).
+async function scopeOf(req: Request) {
+  const given = norm(req.headers.get('x-api-key') ?? ''), app = norm(Deno.env.get('APP_TOKEN') ?? '');
+  if (!given) return null;
+  if (app && given === app) return 'full';
+  const { data } = await db.from('api_keys').select('id,scope').eq('hash', await sha256hex(given)).is('revoked_at', null).maybeSingle();
+  if (!data) return null;
+  await db.from('api_keys').update({ last_used_at: new Date().toISOString() }).eq('id', data.id);
+  return data.scope as string;
+}
+
+// ---------- push notifications: RFC 8291 encryption and RFC 8292 VAPID, with WebCrypto only ----------
+const enc = new TextEncoder();
+const b64u = (b: Uint8Array) => btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const unb64u = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
+const cat = (...a: Uint8Array[]) => { const o = new Uint8Array(a.reduce((n, x) => n + x.length, 0)); let i = 0; for (const x of a) { o.set(x, i); i += x.length; } return o; };
+async function hmac(key: Uint8Array, data: Uint8Array) {
+  const k = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return new Uint8Array(await crypto.subtle.sign('HMAC', k, data));
+}
+// HKDF with one block of output, which is all RFC 8291 needs (up to 32 bytes)
+const hkdf = async (salt: Uint8Array, ikm: Uint8Array, info: Uint8Array, len: number) => (await hmac(await hmac(salt, ikm), cat(info, new Uint8Array([1])))).slice(0, len);
+// Encrypts one message for one device (aes128gcm). Tests pass `as` and `salt`; otherwise both are new for each message.
+async function encrypt(plain: Uint8Array, uaPublic: Uint8Array, authSecret: Uint8Array, as?: CryptoKeyPair, salt?: Uint8Array) {
+  as ??= await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']) as CryptoKeyPair;
+  salt ??= crypto.getRandomValues(new Uint8Array(16));
+  const asPublic = new Uint8Array(await crypto.subtle.exportKey('raw', as.publicKey));
+  const ua = await crypto.subtle.importKey('raw', uaPublic, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+  const ecdh = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: ua }, as.privateKey, 256));
+  const ikm = await hkdf(authSecret, ecdh, cat(enc.encode('WebPush: info\0'), uaPublic, asPublic), 32);
+  const cek = await hkdf(salt, ikm, enc.encode('Content-Encoding: aes128gcm\0'), 16);
+  const nonce = await hkdf(salt, ikm, enc.encode('Content-Encoding: nonce\0'), 12);
+  const key = await crypto.subtle.importKey('raw', cek, 'AES-GCM', false, ['encrypt']);
+  const body = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, key, cat(plain, new Uint8Array([2]))));
+  const header = new Uint8Array(21); header.set(salt); new DataView(header.buffer).setUint32(16, 4096); header[20] = asPublic.length;
+  return cat(header, asPublic, body);
+}
+// A VAPID JWT for the push service's origin, signed by the app server's key (raw r||s, as JWS wants)
+async function vapidAuth(endpoint: string, priv: CryptoKey, pubRaw: Uint8Array, subject: string) {
+  const j = (o: unknown) => b64u(enc.encode(JSON.stringify(o)));
+  const unsigned = `${j({ typ: 'JWT', alg: 'ES256' })}.${j({ aud: new URL(endpoint).origin, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: subject })}`;
+  const sig = new Uint8Array(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, priv, enc.encode(unsigned)));
+  return `vapid t=${unsigned}.${b64u(sig)}, k=${b64u(pubRaw)}`;
+}
+const SITE = 'https://candid-gecko-1d5b6a.netlify.app'; // the VAPID contact: the site, never a personal address
+// The app server's VAPID key pair, made on first use and kept in app_settings. The private key never leaves the database.
+let vapidCache: { priv: CryptoKey; pub: Uint8Array } | null = null;
+async function vapid() {
+  if (vapidCache) return vapidCache;
+  const { data } = await db.from('app_settings').select('value').eq('key', 'vapid').maybeSingle();
+  let v = data?.value;
+  if (!v) {
+    const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']) as CryptoKeyPair;
+    v = { jwk: await crypto.subtle.exportKey('jwk', kp.privateKey), pub: b64u(new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey))) };
+    const { error } = await db.from('app_settings').insert({ key: 'vapid', value: v });
+    if (error) v = (await db.from('app_settings').select('value').eq('key', 'vapid').single()).data?.value; // another request made it first
+  }
+  vapidCache = { priv: await crypto.subtle.importKey('jwk', v.jwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']), pub: unb64u(v.pub) };
+  return vapidCache;
+}
+// Push services a subscription may point at (Apple, Google, Mozilla, Microsoft), so the server never posts anywhere else
+const PUSH_HOSTS = /^https:\/\/([\w-]+\.)*(push\.apple\.com|fcm\.googleapis\.com|push\.services\.mozilla\.com|notify\.windows\.com)\//;
+type Msg = { title: string; body: string; tag?: string };
+// One notification to every subscribed device. A device the push service no longer knows (404 or 410) is dropped.
+async function push(msg: Msg) {
+  const { data: subs, error } = await db.from('push_subscriptions').select('endpoint,p256dh,auth');
+  if (error) throw new Error(error.message);
+  const errors: string[] = [];
+  let sent = 0;
+  if (!subs?.length) return { sent, errors };
+  const v = await vapid(), plain = enc.encode(JSON.stringify(msg));
+  for (const s of subs) {
+    try {
+      const body = await encrypt(plain, unb64u(s.p256dh), unb64u(s.auth));
+      const r = await fetch(s.endpoint, { method: 'POST', body, headers: { authorization: await vapidAuth(s.endpoint, v.priv, v.pub, SITE), 'content-encoding': 'aes128gcm', 'content-type': 'application/octet-stream', ttl: '86400', urgency: 'normal' } });
+      if (r.ok) {
+        await r.body?.cancel(); sent++;
+        await db.from('push_subscriptions').update({ last_ok_at: new Date().toISOString() }).eq('endpoint', s.endpoint);
+      } else {
+        errors.push(`${new URL(s.endpoint).host} ${r.status} ${(await r.text()).slice(0, 120)}`);
+        if (r.status === 404 || r.status === 410) await db.from('push_subscriptions').delete().eq('endpoint', s.endpoint);
+      }
+    } catch (e) { errors.push((e as Error).message); } // one device failing doesn't stop the others
+  }
+  return { sent, errors };
+}
+
+// ---------- scheduled jobs: pg_cron calls ?action=tick at 7 minutes past every hour ----------
+// One run of the scheduler. A forced run (for testing) sends nothing and records nothing: it returns the messages instead.
+type Run = { out: Msg[]; alert: (key: string, msg: Msg) => Promise<number> };
+function newRun(dry: boolean): Run {
+  const out: Msg[] = [];
+  return {
+    out,
+    async alert(key, msg) {
+      if (dry) { out.push(msg); return 0; }
+      // Each alert goes out once: its key is claimed first, and given back if no device got it, so a later hour tries again
+      if ((await db.from('notify_log').insert({ key })).error) return 0;
+      let n = 0;
+      try { n = (await push(msg)).sent; } finally { if (!n) await db.from('notify_log').delete().eq('key', key); }
+      return n;
+    },
+  };
+}
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const ordinal = (n: number) => n + (n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th');
+const dayOf = (p: { occurred_at: string | null; created_at: string }) => Math.floor((Date.parse(p.occurred_at ?? p.created_at) + RIYADH) / DAY);
+const dayOfDate = (s: string) => Math.floor(Date.parse(`${s}T00:00:00Z`) / DAY);
+const monthOf = (n: number) => isoDay(n).slice(0, 7);
+const ROW = 'merchant,amount,kind,category,excluded,occurred_at,created_at';
+// Payments from the start of Riyadh day `n` on, in insert order
+// deno-lint-ignore no-explicit-any
+const readSince = (n: number): Promise<{ data: any[]; error: { message: string } | null }> => {
+  const from = new Date(n * DAY - RIYADH).toISOString();
+  return readAll(() => db.from('payments').select(ROW).or(`occurred_at.gte."${from}",and(occurred_at.is.null,created_at.gte."${from}")`).order('created_at').order('id'));
+};
+const fail = (...r: { error: { message: string } | null }[]) => { const e = r.find((x) => x.error)?.error; if (e) throw new Error(e.message); };
+// The app's fixedKey(): bills are matched by merchant and exact amount, as fixedCosts() in index.html finds them
+const fixedKey = (merchant: string | null, amount: unknown) => `${(merchant ?? '').toLowerCase().trim()}|${num(amount).toFixed(2)}`;
+const when = (ahead: number, n: number) => (ahead === 0 ? 'today' : ahead === 1 ? 'tomorrow' : WEEKDAYS[new Date(n * DAY).getUTCDay()]);
+const addMonths = (n: number, k: number) => {
+  const d = new Date(n * DAY), y = d.getUTCFullYear(), m = d.getUTCMonth() + k;
+  return Math.floor(Date.UTC(y, m, Math.min(d.getUTCDate(), new Date(Date.UTC(y, m + 1, 0)).getUTCDate())) / DAY);
+};
+// Tabby and Tamara plans: the instalments paid are payments to that provider of about the instalment (within 1 riyal),
+// from 3 days before the first one, earliest first. Each payment counts for one plan only. Same as bnplState() in index.html.
+// deno-lint-ignore no-explicit-any
+function bnplState(plans: any[], rows: any[]) {
+  const used = new Set(), out = new Map<string, { paid: number; next: number | null }>();
+  const pays = rows.filter((r) => counts(r) > 0 && r.merchant).sort((a, b) => Date.parse(a.occurred_at ?? a.created_at) - Date.parse(b.occurred_at ?? b.created_at) || (a.created_at < b.created_at ? -1 : 1));
+  for (const p of [...plans].sort((a, b) => (a.first === b.first ? (String(a.id) < String(b.id) ? -1 : 1) : a.first < b.first ? -1 : 1))) {
+    const first = dayOfDate(p.first), key = merchantKey(p.provider);
+    const hits = pays.filter((r) => !used.has(r) && merchantKey(r.merchant).includes(key) && Math.abs(num(r.amount) - num(p.amount)) <= 1 && dayOf(r) >= first - 3).slice(0, p.count);
+    hits.forEach((r) => used.add(r));
+    out.set(p.id, { paid: hits.length, next: hits.length >= p.count ? null : p.every === '2weeks' ? first + 14 * hits.length : addMonths(first, hits.length) });
+  }
+  return out;
+}
+// Categories at 80% of their monthly limit, or over it. A category that is mostly fixed costs this month (rent) only
+// alerts when over, as mostlyFixed() in index.html. A raised limit can alert again.
+async function limitAlerts(run: Run, today: number) {
+  const t = new Date(today * DAY), y = t.getUTCFullYear(), m = t.getUTCMonth(), start = Math.floor(Date.UTC(y, m, 1) / DAY);
+  const left = new Date(Date.UTC(y, m + 1, 0)).getUTCDate() - t.getUTCDate() + 1, togo = `${left} day${left === 1 ? '' : 's'} to go`;
+  const [l, b, r] = await Promise.all([db.from('category_limits').select('category,monthly'), db.from('bills').select('key'), readSince(start)]);
+  fail(l, b, r);
+  const keys = new Set((b.data ?? []).map((x) => x.key)), all = new Map<string, number>(), fixed = new Map<string, number>();
+  for (const p of r.data) {
+    const v = counts(p);
+    if (!v) continue;
+    all.set(p.category, (all.get(p.category) || 0) + v);
+    if (keys.has(fixedKey(p.merchant, p.amount))) fixed.set(p.category, (fixed.get(p.category) || 0) + v);
+  }
+  let n = 0;
+  for (const { category: c, monthly } of l.data ?? []) {
+    const cap = num(monthly), v = all.get(c) || 0, mostlyFixed = v > 0 && (fixed.get(c) || 0) >= v * 0.9;
+    if (v > cap) n += await run.alert(`limit100:${c}:${monthOf(today)}:${cap}`, { title: `${c} is over its limit`, body: `${whole(v)} of ${whole(cap)} this month, over by ${whole(v - cap)}, with ${togo}.`, tag: `limit:${c}` });
+    else if (v >= cap * 0.8 && !mostlyFixed) n += await run.alert(`limit80:${c}:${monthOf(today)}:${cap}`, { title: `${c}: ${whole(v)} of ${whole(cap)}`, body: `${Math.floor((v / cap) * 100)}% of this month's limit, with ${togo}.`, tag: `limit:${c}` });
+  }
+  return n;
+}
+// Due within 2 days: bills the app found (fixed costs) and Tabby or Tamara instalments. As dueSoon() in index.html, a bill
+// paid this month is next due on the same day next month.
+async function billAlerts(run: Run, today: number) {
+  const [b, pl] = await Promise.all([db.from('bills').select('key,label,amount,day'), db.from('bnpl_plans').select('id,provider,amount,count,first,every')]);
+  fail(b, pl);
+  const bills = b.data ?? [], plans = pl.data ?? [];
+  if (!bills.length && !plans.length) return 0;
+  const t = new Date(today * DAY), y = t.getUTCFullYear(), m = t.getUTCMonth(), start = Math.floor(Date.UTC(y, m, 1) / DAY);
+  const r = await readSince(Math.min(start, ...plans.map((p) => dayOfDate(p.first) - 3)));
+  fail(r);
+  const paidNow = new Set(r.data.filter((p) => dayOf(p) >= start && counts(p) > 0).map((p) => fixedKey(p.merchant, p.amount)));
+  const providers = plans.map((p) => merchantKey(p.provider));
+  let n = 0;
+  for (const x of bills) {
+    if (providers.some((k) => x.key.split('|')[0].includes(k))) continue; // the instalment plan reminds about these
+    const paid = paidNow.has(x.key), mm = paid ? m + 1 : m, dim = new Date(Date.UTC(y, mm + 1, 0)).getUTCDate();
+    const due = Math.floor(Date.UTC(y, mm, Math.min(x.day, dim)) / DAY), ahead = due - today;
+    if (ahead < 0 || ahead > 2) continue;
+    n += await run.alert(`bill:${x.key}:${monthOf(due)}`, { title: `${x.label} ${exact(num(x.amount))} is due ${when(ahead, due)}`, body: `Paid around the ${ordinal(x.day)} each month.`, tag: `bill:${x.key}` });
+  }
+  const st = bnplState(plans, r.data);
+  for (const p of plans) {
+    const s = st.get(p.id), ahead = s?.next == null ? -1 : s.next - today;
+    if (!s || s.next == null || ahead < 0 || ahead > 2) continue;
+    n += await run.alert(`bnpl:${p.id}:${s.paid}`, { title: `${p.provider} ${exact(num(p.amount))} is due ${when(ahead, s.next)}`, body: `Instalment ${s.paid + 1} of ${p.count}${s.paid + 1 === p.count ? ', the last one' : ''}.`, tag: `bnpl:${p.id}` });
+  }
+  return n;
+}
+// Nothing from the bank for 3 days: once for each quiet spell
+async function staleAlert(run: Run, today: number) {
+  const s = await summarize();
+  if (s.stale_days < 3) return 0;
+  const last = today - s.stale_days;
+  return run.alert(`stale:${isoDay(last)}`, { title: `No payments for ${s.stale_days} days`, body: `The last one was on ${WEEKDAYS[new Date(last * DAY).getUTCDay()]} ${new Date(last * DAY).getUTCDate()} ${MONTHS[new Date(last * DAY).getUTCMonth()]}. If you've paid for things since, check that the SMS Shortcut is still on.`, tag: 'stale' });
+}
+const topCats = (rows: { category: string }[]) => {
+  const m = new Map<string, number>();
+  for (const p of rows) { const v = counts(p); if (v) m.set(p.category, (m.get(p.category) || 0) + v); }
+  return [...m].filter(([, v]) => v > 0.5).sort((a, b) => b[1] - a[1]);
+};
+// Thursday evening: the last 7 days. Bills are listed on their own, and day-to-day spending is compared with the usual
+// week (the 8 weeks before, leaving out weeks with missing days), so a week with rent in it doesn't look like a splurge.
+async function weekly(run: Run, today: number) {
+  const from = today - 7 * 9 + 1 - 5; // 5 days early, so a gap running into the oldest week is seen in full
+  const [b, r] = await Promise.all([db.from('bills').select('key,label'), readSince(from)]);
+  fail(b, r);
+  const labels = new Map((b.data ?? []).map((x) => [x.key, x.label]));
+  const isBill = (p: { merchant: string | null; amount: unknown }) => labels.has(fixedKey(p.merchant, p.amount));
+  const perDay = new Map<number, number>(), seen = new Set<number>();
+  for (const p of r.data) { const d = dayOf(p); seen.add(d); if (!isBill(p)) perDay.set(d, (perDay.get(d) || 0) + counts(p)); }
+  const days = [from - 1, ...[...seen].sort((a, c) => a - c)], ok = (a: number, c: number) => !gaps(days, a, c, today).length;
+  const week = (end: number) => { let s = 0; for (let d = end - 6; d <= end; d++) s += perDay.get(d) || 0; return s; };
+  const now = r.data.filter((p) => dayOf(p) > today - 7), billRows = now.filter((p) => isBill(p) && counts(p) > 0);
+  const total = now.reduce((s, p) => s + counts(p), 0), billSum = billRows.reduce((s, p) => s + counts(p), 0), v = week(today);
+  const parts: string[] = [];
+  if (billSum) parts.push(`Bills ${whole(billSum)}: ${[...new Set(billRows.map((p) => labels.get(fixedKey(p.merchant, p.amount))))].join(', ')}.`);
+  const past = [1, 2, 3, 4, 5, 6, 7, 8].map((k) => today - 7 * k).filter((e) => ok(e - 6, e)).map(week);
+  if (today - days[days.length - 1] >= 3 || !ok(today - 6, today)) parts.push('Some days have no data, so there is no comparison.');
+  else if (past.length >= 3) {
+    const usual = past.reduce((s, x) => s + x, 0) / past.length, d = v - usual;
+    const verdict = Math.abs(d) < Math.max(100, usual * 0.05) ? 'about your usual week' : `${Math.round((Math.abs(d) / usual) * 100)}% ${d > 0 ? 'more' : 'less'} than your usual week`;
+    parts.push(billSum ? `Day to day ${whole(v)}, ${verdict}.` : `${verdict[0].toUpperCase()}${verdict.slice(1)} (${whole(usual)}).`);
+  }
+  const top = topCats(now.filter((p) => !isBill(p))).slice(0, 2);
+  if (top.length) parts.push(top.map(([c, x]) => `${c} ${whole(x)}`).join(', ') + '.');
+  return run.alert(`weekly:${isoDay(today)}`, { title: `This week: ${whole(total)} SAR`, body: parts.join(' ') || 'Nothing spent this week.', tag: 'weekly' });
+}
+// The 1st of the month: last month against usual, the biggest changes and new places. Same as recapCard() in index.html.
+async function recapPush(run: Run, today: number) {
+  const r = await readAll(() => db.from('payments').select(ROW).order('created_at').order('id'));
+  fail(r);
+  const data = r.data;
+  if (!data.length) return 0;
+  const seen = [...new Set(data.map(dayOf))].sort((a, b) => a - b);
+  const mIdx = (p: { occurred_at: string | null; created_at: string }) => { const d = new Date(dayOf(p) * DAY); return d.getUTCFullYear() * 12 + d.getUTCMonth(); };
+  const t = new Date(today * DAY), last = t.getUTCFullYear() * 12 + t.getUTCMonth() - 1, firstM = Math.min(...data.map(mIdx));
+  if (last < firstM) return 0;
+  // As partial() in index.html: a month starting before the first payment, or touching a gap of 5+ days
+  const partial = (x: number) => { const a = Math.floor(Date.UTC(Math.floor(x / 12), x % 12, 1) / DAY), b = Math.min(Math.floor(Date.UTC(Math.floor(x / 12), x % 12 + 1, 0) / DAY), today); return seen[0] > a || gaps(seen, a, b, today).length > 0; };
+  const sumOf = (x: number) => data.reduce((s, p) => s + (mIdx(p) === x ? counts(p) : 0), 0);
+  const byCat = (x: number) => { const m = new Map<string, number>(); for (const p of data) if (mIdx(p) === x) { const v = counts(p); if (v) m.set(p.category, (m.get(p.category) || 0) + v); } return m; };
+  const total = sumOf(last), prev = [1, 2, 3].map((k) => last - k).filter((x) => x >= firstM && !partial(x));
+  let body = '';
+  if (partial(last)) body = 'Some days have no data, so there is no comparison.';
+  else if (prev.length) {
+    const usual = prev.reduce((s, x) => s + sumOf(x), 0) / prev.length, d = total - usual;
+    body = Math.abs(d) < Math.max(100, usual * 0.05) ? 'About your usual.' : `${whole(Math.abs(d))} ${d > 0 ? 'more' : 'less'} than usual.`;
+    const cur = byCat(last), avg = new Map<string, number>();
+    for (const x of prev) for (const [c, v] of byCat(x)) avg.set(c, (avg.get(c) || 0) + v / prev.length);
+    const ch = [...new Set([...cur.keys(), ...avg.keys()])].map((c) => [c, (cur.get(c) || 0) - (avg.get(c) || 0)] as [string, number]).filter(([c, x]) => Math.abs(x) >= 100 && c !== 'Uncategorized').sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 3);
+    if (ch.length) body += ' ' + ch.map(([c, x]) => `${c} ${x > 0 ? '+' : '−'}${whole(Math.abs(x))}`).join(', ') + '.';
+  }
+  // New places: shops, not people, so a transfer counted as spending never puts a name on the lock screen
+  const before = new Set(data.filter((p) => mIdx(p) < last).map((p) => merchantKey(p.merchant)));
+  const fresh = [...new Set(data.filter((p) => mIdx(p) === last && counts(p) > 0 && p.kind !== 'transfer_out' && p.merchant && !before.has(merchantKey(p.merchant))).map((p) => p.merchant))];
+  if (fresh.length) body += ` New: ${fresh.slice(0, 3).join(', ')}${fresh.length > 3 ? ` and ${fresh.length - 3} more` : ''}.`;
+  return run.alert(`recap:${monthOf(Math.floor(Date.UTC(Math.floor(last / 12), last % 12, 1) / DAY))}`, { title: `${MONTHS[last % 12]}: ${whole(total)} SAR`, body: body.trim() || 'Your first month in the app.', tag: 'recap' });
+}
+// Thursday night: a gzipped copy of every table you'd need to rebuild, in the private `backups` bucket, keeping the last 12.
+// Keys, push devices and the alert log are left out on purpose.
+const BACKUP: Record<string, string[]> = { payments: ['created_at', 'id'], merchant_rules: ['merchant_key'], merchant_aliases: ['merchant_key'], category_limits: ['category'], bills: ['key'], bnpl_plans: ['id'] };
+async function backup(today: number) {
+  const out: Record<string, unknown> = { made_at: new Date().toISOString() };
+  for (const [table, order] of Object.entries(BACKUP)) {
+    const r = await readAll(() => order.reduce((q, c) => q.order(c), db.from(table).select('*')));
+    if (r.error) throw new Error(`${table}: ${r.error.message}`);
+    out[table] = r.data;
+  }
+  const file = `${isoDay(today)}.json.gz`;
+  const gz = new Uint8Array(await new Response(new Blob([JSON.stringify(out)]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer());
+  const { error } = await db.storage.from('backups').upload(file, gz, { contentType: 'application/gzip', upsert: true });
+  if (error) throw new Error(error.message);
+  const { data: files } = await db.storage.from('backups').list('', { limit: 200, sortBy: { column: 'name', order: 'desc' } });
+  const old = (files ?? []).map((f) => f.name).filter((n) => /^\d{4}-\d\d-\d\d\.json\.gz$/.test(n)).sort().reverse().slice(12);
+  if (old.length) await db.storage.from('backups').remove(old);
+  const info = { at: new Date().toISOString(), file, payments: (out.payments as unknown[]).length, bytes: gz.length };
+  await db.from('app_settings').upsert({ key: 'last_backup', value: info, updated_at: info.at });
+  return info;
+}
+// Runs what's due this hour, in Riyadh time. Each job has a window of a few hours and runs once in it, so one missed
+// hour loses nothing. Alerts only run while a device is subscribed. `force` runs one job (or 'all') now, sending nothing.
+async function tick(force: string | null) {
+  const now = new Date(Date.now() + RIYADH), h = now.getUTCHours(), dow = now.getUTCDay(), today = Math.floor(now.getTime() / DAY);
+  const lastMonth = monthOf(Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1) / DAY));
+  const run = newRun(!!force), done: Record<string, unknown> = {};
+  const { count: devices } = await db.from('push_subscriptions').select('endpoint', { count: 'exact', head: true });
+  const logged = async (key: string) => !!(await db.from('notify_log').select('key').eq('key', key).maybeSingle()).data;
+  const due = async (job: string, window: boolean, key?: string) =>
+    force ? force === job || force === 'all' : window && (job === 'backup' || !!devices) && !(key && (await logged(key)));
+  const go = async (job: string, f: () => Promise<unknown>) => { try { done[job] = await f(); } catch (e) { done[job] = `error: ${(e as Error).message}`; } };
+  if (await due('backup', dow === 4 && h >= 3 && h <= 8, `backup:${isoDay(today)}`)) {
+    await go('backup', async () => { const info = await backup(today); if (!force) await db.from('notify_log').insert({ key: `backup:${isoDay(today)}` }); return info; });
+  }
+  if (await due('limits', h >= 9 && h <= 22)) await go('limits', () => limitAlerts(run, today));
+  if (await due('bills', h >= 10 && h <= 21)) await go('bills', () => billAlerts(run, today));
+  if (await due('recap', now.getUTCDate() === 1 && h >= 10 && h <= 21, `recap:${lastMonth}`)) await go('recap', () => recapPush(run, today));
+  if (await due('weekly', dow === 4 && h >= 20 && h <= 23, `weekly:${isoDay(today)}`)) await go('weekly', () => weekly(run, today));
+  if (await due('stale', h >= 21 && h <= 23)) await go('stale', () => staleAlert(run, today));
+  return force ? { done, messages: run.out } : { done };
+}
+
+async function handle(req: Request): Promise<Response> {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
-  const key = norm(Deno.env.get('APP_TOKEN') ?? '');
-  if (!key || norm(req.headers.get('x-api-key') ?? '') !== key) return json({ error: 'unauthorized' }, 401);
+  const scope = await scopeOf(req);
+  if (!scope) return json({ error: 'unauthorized' }, 401);
   const url = new URL(req.url);
   const action = url.searchParams.get('action');
   const id = url.searchParams.get('id');
 
-  if (req.method === 'GET' && action === 'summary') {
-    try { return json(await summarize()); } catch (e) { return json({ error: (e as Error).message }, 500); }
+  // The scheduler's key can only run the scheduled jobs. With the full key, ?force=<job> runs one now and sends nothing.
+  if (req.method === 'POST' && action === 'tick' && (scope === 'cron' || scope === 'full')) {
+    return json({ ok: true, ...(await tick(scope === 'full' ? url.searchParams.get('force') : null)) });
+  }
+  if (scope !== 'full') return json({ error: 'forbidden' }, 403);
+
+  // Push: the public key to subscribe with, devices in and out, a test message, and a status line for the app
+  if (req.method === 'GET' && action === 'push-key') return json({ key: b64u((await vapid()).pub) });
+  if (req.method === 'POST' && action === 'subscribe') {
+    const b = await req.json();
+    const ok = typeof b?.endpoint === 'string' && b.endpoint.length < 1000 && PUSH_HOSTS.test(b.endpoint) && /^[\w-]{80,100}$/.test(b?.keys?.p256dh ?? '') && /^[\w-]{16,30}$/.test(b?.keys?.auth ?? '');
+    if (!ok) return json({ error: 'expected {endpoint, keys: {p256dh, auth}} from a push service' }, 400);
+    const { error } = await db.from('push_subscriptions').upsert({ endpoint: b.endpoint, p256dh: b.keys.p256dh, auth: b.keys.auth });
+    return error ? json({ error: error.message }, 500) : json({ ok: true });
+  }
+  if (req.method === 'POST' && action === 'unsubscribe') {
+    const b = await req.json();
+    const { error } = await db.from('push_subscriptions').delete().eq('endpoint', String(b?.endpoint ?? ''));
+    return error ? json({ error: error.message }, 500) : json({ ok: true });
+  }
+  if (req.method === 'POST' && action === 'push-test') {
+    return json({ ok: true, ...(await push({ title: 'Notifications are on', body: 'You\'ll get the weekly summary, the monthly recap, bills and instalments due, limits, and a warning if SMS stop arriving.', tag: 'test' })) });
+  }
+  if (req.method === 'GET' && action === 'status') {
+    const [b, d] = await Promise.all([db.from('app_settings').select('value').eq('key', 'last_backup').maybeSingle(), db.from('push_subscriptions').select('endpoint', { count: 'exact', head: true })]);
+    return json({ last_backup: b.data?.value ?? null, devices: d.count ?? 0 });
+  }
+  // The bills the app found (its fixed costs), sent whole whenever they change, for the reminders
+  if (req.method === 'PUT' && action === 'bills') {
+    const list = await req.json();
+    const okBill = (x: Record<string, unknown>) => typeof x?.key === 'string' && x.key.length <= 160 && /\|\d+\.\d\d$/.test(x.key) && typeof x.label === 'string' && !!x.label && Number(x.amount) > 0 && Number.isInteger(x.day) && Number(x.day) >= 1 && Number(x.day) <= 31;
+    if (!Array.isArray(list) || list.length > 200 || !list.every(okBill)) return json({ error: 'expected [{key, label, amount, day, category}]' }, 400);
+    const now = new Date().toISOString(), rows = [...new Map(list.map((x) => [x.key, { key: x.key, label: x.label.slice(0, 80), amount: round2(Number(x.amount)), day: x.day, category: typeof x.category === 'string' ? x.category.slice(0, 40) : null, updated_at: now }])).values()];
+    if (rows.length) { const { error } = await db.from('bills').upsert(rows); if (error) return json({ error: error.message }, 500); }
+    const { data: have, error: e1 } = await db.from('bills').select('key');
+    if (e1) return json({ error: e1.message }, 500);
+    const gone = (have ?? []).map((x) => x.key).filter((k) => !rows.some((x) => x.key === k));
+    if (gone.length) { const { error } = await db.from('bills').delete().in('key', gone); if (error) return json({ error: error.message }, 500); }
+    return json({ ok: true, bills: rows.length });
+  }
+  // Tabby and Tamara plans you entered. PUT sends the whole set, as for limits; the app makes each plan's id.
+  if (action === 'bnpl' && req.method === 'GET') {
+    const { data, error } = await db.from('bnpl_plans').select('id,provider,amount,count,first,every,note').order('first').order('id');
+    return error ? json({ error: error.message }, 500) : json(data);
+  }
+  if (action === 'bnpl' && req.method === 'PUT') {
+    const list = await req.json();
+    const okPlan = (p: Record<string, unknown>) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(p?.id)) && typeof p.provider === 'string' && !!p.provider.trim() &&
+      Number(p.amount) > 0 && Number.isInteger(p.count) && Number(p.count) >= 1 && Number(p.count) <= 36 && /^\d{4}-\d\d-\d\d$/.test(String(p.first)) && !isNaN(Date.parse(String(p.first))) && ['month', '2weeks'].includes(String(p.every ?? 'month'));
+    if (!Array.isArray(list) || list.length > 50 || !list.every(okPlan)) return json({ error: 'expected [{id, provider, amount, count, first, every}]' }, 400);
+    const rows = list.map((p) => ({ id: p.id.toLowerCase(), provider: p.provider.trim().slice(0, 40), amount: round2(Number(p.amount)), count: p.count, first: p.first, every: p.every ?? 'month', note: typeof p.note === 'string' && p.note.trim() ? p.note.trim().slice(0, 80) : null }));
+    if (rows.length) { const { error } = await db.from('bnpl_plans').upsert(rows); if (error) return json({ error: error.message }, 500); }
+    const { data: have, error: e1 } = await db.from('bnpl_plans').select('id');
+    if (e1) return json({ error: e1.message }, 500);
+    const gone = (have ?? []).map((x) => x.id).filter((k) => !rows.some((x) => x.id === k));
+    if (gone.length) { const { error } = await db.from('bnpl_plans').delete().in('id', gone); if (error) return json({ error: error.message }, 500); }
+    return json({ ok: true, plans: rows.length });
   }
 
-  // The SHA-256 of this file as deployed, so a deploy can be checked against the repo without copying the code back
-  if (req.method === 'GET' && action === 'version') {
-    try {
-      const src = new TextEncoder().encode(await Deno.readTextFile(new URL(import.meta.url)));
-      return json({ sha256: [...new Uint8Array(await crypto.subtle.digest('SHA-256', src))].map((b) => b.toString(16).padStart(2, '0')).join('') });
-    } catch (e) { return json({ sha256: null, error: (e as Error).message }); }
+  if (req.method === 'GET' && action === 'summary') {
+    try { return json(await summarize()); } catch (e) { return json({ error: (e as Error).message }, 500); }
   }
 
   // Monthly limits per category. PUT sends the whole set: a category left out loses its limit.
@@ -413,4 +767,10 @@ Deno.serve(async (req) => {
     return json({ ok: true, category, ...p, notice: notice(p, category, s) });
   }
   return json({ error: 'method' }, 405);
+}
+
+Deno.serve(async (req) => {
+  try { return await handle(req); } catch (e) {
+    return e instanceof SyntaxError ? json({ error: 'invalid JSON' }, 400) : json({ error: (e as Error)?.message ?? String(e) }, 500);
+  }
 });

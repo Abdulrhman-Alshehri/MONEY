@@ -98,7 +98,7 @@ dialog{width:min(440px,calc(100vw - 24px));padding:20px;border:0;border-radius:2
 dialog::backdrop{background:rgba(0,0,0,.55)}
 dialog h3{font-size:22px;margin:0;overflow-wrap:anywhere}
 dialog label{display:block;margin-top:16px;font-size:15px;color:var(--fg2)}
-dialog select,dialog input[type=text]{display:block;width:100%;margin-top:6px;padding:11px 12px;border:1px solid var(--ring);border-radius:12px;background:var(--page);font-size:17px}
+dialog select,dialog input[type=text],dialog input[type=date]{display:block;width:100%;margin-top:6px;padding:11px 12px;border:1px solid var(--ring);border-radius:12px;background:var(--page);font-size:17px}
 dialog .chk{display:flex;gap:10px;align-items:center;font-size:17px;color:var(--fg)}
 .chk input{width:22px;height:22px;margin:0;flex:none;accent-color:var(--acc)}
 .hint{margin-top:8px;font-size:15px;color:var(--fg2)}
@@ -139,6 +139,9 @@ dialog .row{padding:7px 0}
 .limrow input{width:100%;padding:9px 10px;border:1px solid var(--ring);border-radius:10px;background:var(--page);font-size:17px;text-align:right}
 .title-row{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
 .acts.wrap{flex-wrap:wrap}.acts.wrap .btn{flex:1 1 40%}
+dialog input[type=date]{-webkit-appearance:none;appearance:none;min-height:46px;text-align:left}
+#mNotify .acts{margin-top:12px}#mNotify .acts .btn{flex:1}
+#mNotify .label b{color:var(--fg);font-weight:600}
 </style>
 </head>
 <body>
@@ -200,7 +203,14 @@ dialog .row{padding:7px 0}
     <h2>Every month</h2>
     <div class="label" id="mFixedSum"></div>
     <div id="mFixed"></div>
+    <h2>Tabby &amp; Tamara<button class="link" id="mBnplAdd">Add</button></h2>
+    <div class="label" id="mBnplSum"></div>
+    <div id="mBnpl"></div>
     <div id="mBalW"><h2>Balance</h2><div class="label" id="mBalD"></div><div class="chart" id="mBal" style="margin-top:12px"></div></div>
+    <h2>Notifications</h2>
+    <div id="mNotify"></div>
+    <h2>Backup</h2>
+    <div class="label" id="mBackup"></div>
     <h2>Categories<button class="link" id="mCats">Manage</button></h2>
     <div class="label">Rename, merge or delete categories everywhere.</div>
   </section>
@@ -266,6 +276,21 @@ dialog .row{padding:7px 0}
   <div class="err" id="cErr"></div>
   <div class="acts"><button class="btn danger" id="cDel" hidden>Delete</button><button class="btn" id="cCancel">Close</button><button class="btn primary" id="cOk" hidden>Save</button></div>
 </dialog>
+<dialog id="bnplDlg">
+  <h3 id="iT">Instalment plan</h3>
+  <div class="label" id="iInfo" style="margin-top:4px"></div>
+  <div class="big">
+    <label>Provider<select id="iProv"><option>Tabby</option><option>Tamara</option><option value="">Other</option></select></label>
+    <label id="iOtherW" hidden>Name, as it appears on your payments<input id="iOther" type="text" maxlength="40" autocomplete="off"></label>
+    <label>Each instalment in SAR<input id="iAmt" type="text" inputmode="decimal" autocomplete="off"></label>
+    <label>Number of instalments<input id="iCount" type="text" inputmode="numeric" autocomplete="off"></label>
+    <label>First instalment<input id="iFirst" type="date"></label>
+    <label>Every<select id="iEvery"><option value="month">Month</option><option value="2weeks">2 weeks</option></select></label>
+    <label>What it was for (optional)<input id="iNote" type="text" maxlength="80" autocomplete="off"></label>
+  </div>
+  <div class="err" id="iErr"></div>
+  <div class="acts"><button class="btn danger" id="iDel">Delete</button><button class="btn" id="iCancel">Cancel</button><button class="btn primary" id="iOk">Save</button></div>
+</dialog>
 <div id="tt"></div>
 
 <script>
@@ -283,6 +308,7 @@ const ICONS = {
 };
 let data = [], tab = 'home', vy = 0, vm = 0, showAllCats = false, pFilter = null, shown = 60, cur = null, loadedAt = 0, fixedCache = null, dayCache = null, unusualCache = null;
 let limits = new Map(), offlineAt = 0, sheetActs = {}, catFrom = null;
+let bnpl = [], planEdit = null, srvStatus = null, statusAt = 0, swReg = null, pushKey = null;
 // This phone's storage. Reads fall back and writes report failure, since private browsing can refuse both.
 const store = {
   get: (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
@@ -359,19 +385,22 @@ async function load() {
   if (!localStorage.getItem('tok')) return showLogin('');
   await flush();
   try {
-    const [r, rl] = await Promise.all([fetch(API, {headers: headers()}), fetch(`${API}?action=limits`, {headers: headers()}).catch(() => null)]);
+    const get = q => fetch(API + q, {headers: headers()}).catch(() => null);
+    const [r, rl, rb] = await Promise.all([fetch(API, {headers: headers()}), get('?action=limits'), get('?action=bnpl')]);
     if (r.status === 401) { localStorage.removeItem('tok'); return showLogin('Wrong token'); }
     if (!r.ok) throw new Error(r.status);
     const text = await r.text();
-    setData(JSON.parse(text)); cacheData(text);
-    if (rl && rl.ok) { const l = await rl.json(); setLimits(l); store.set('limits', l); }
-    else setLimits(store.get('limits', []));
+    if (rl && rl.ok) { const l = await rl.json(); setLimits(l); store.set('limits', l); } else setLimits(store.get('limits', []));
+    if (rb && rb.ok) { bnpl = await rb.json(); store.set('bnpl', bnpl); } else bnpl = store.get('bnpl', []);
+    setData(JSON.parse(text)); cacheData(text); // after limits and plans, so changes still waiting to send show on top
     offlineAt = 0;
+    syncBills(); syncPush();
   } catch (e) {
     if (!loadedAt) {
       const text = await cachedData();
       if (!text) return showLogin('Could not reach the server');
-      setData(JSON.parse(text)); setLimits(store.get('limits', []));
+      setLimits(store.get('limits', [])); bnpl = store.get('bnpl', []);
+      setData(JSON.parse(text));
     }
     offlineAt = store.get('dataAt', Date.now());
   }
@@ -421,6 +450,7 @@ function applyOp(op) {
     data.forEach(x => { if (x.category === b.from) x.category = b.to; });
     if (limits.has(b.from)) { if (b.to !== 'Uncategorized' && !limits.has(b.to)) limits.set(b.to, limits.get(b.from)); limits.delete(b.from); }
   } else if (op.kind === 'limits') setLimits(b);
+  else if (op.kind === 'bnpl') { bnpl = b.map(x => ({...x})); store.set('bnpl', bnpl); }
 }
 function showOffline() {
   const n = outbox().length, at = offlineAt ? new Date(offlineAt + RIYADH) : null;
@@ -497,6 +527,78 @@ function fixedCosts() {
     out.push({p: list.reduce((a, b) => b._d > a._d ? b : a), day: ds[Math.floor(ds.length / 2)], paid: perMonth.has(now)});
   });
   return fixedCache = out.sort((a, b) => b.p.amount - a.p.amount);
+}
+// The fixed costs go to the server whenever they change, so it can remind you 2 days before each one
+async function syncBills() {
+  const body = JSON.stringify(fixedCosts().map(f => ({key: fixedKey(f.p), label: label(f.p), amount: f.p.amount, day: f.day, category: f.p.category})));
+  if (store.get('billsSent', null) === body) return;
+  try { const r = await fetch(`${API}?action=bills`, {method: 'PUT', headers: {...headers(), 'Content-Type': 'application/json'}, body}); if (r.ok) store.set('billsSent', body); } catch (e) {}
+}
+
+// ---------- Tabby and Tamara ----------
+// Plans you enter; the instalments paid are found among the payments. The same rules as bnplState() in index.ts:
+// payments to that provider of about the instalment (within 1 riyal), from 3 days before the first, earliest first,
+// each counted for one plan only.
+const isoDate = n => fromDayNum(n).toISOString().slice(0, 10);
+const addMonthsN = (n, k) => { const d = fromDayNum(n), y = d.getUTCFullYear(), m = d.getUTCMonth() + k; return dayNum(new Date(Date.UTC(y, m, Math.min(d.getUTCDate(), daysIn(y, m))))); };
+const planDay = (pl, i) => { const first = dayNum(new Date(pl.first + 'T00:00:00Z')); return pl.every === '2weeks' ? first + 14 * i : addMonthsN(first, i); };
+function bnplState() {
+  const used = new Set(), state = new Map();
+  const pays = data.filter(p => spend(p) > 0 && p.merchant).sort((a, b) => a._d - b._d || (a.created_at < b.created_at ? -1 : 1));
+  [...bnpl].sort((a, b) => a.first === b.first ? (String(a.id) < String(b.id) ? -1 : 1) : a.first < b.first ? -1 : 1).forEach(pl => {
+    const first = planDay(pl, 0), key = nameKey(pl.provider);
+    const hits = pays.filter(p => !used.has(p) && nameKey(p.merchant).includes(key) && Math.abs(p.amount - pl.amount) <= 1 && dayNum(p._d) >= first - 3).slice(0, pl.count);
+    hits.forEach(p => used.add(p));
+    state.set(pl.id, {paid: hits.length, next: hits.length >= pl.count ? null : planDay(pl, hits.length)});
+  });
+  return {state, used};
+}
+// Instalments still to pay that fall due from one day to another (day numbers)
+function instalmentsDue(from, to) {
+  const {state} = bnplState(), out = [];
+  bnpl.forEach(pl => { const s = state.get(pl.id); if (s) for (let i = s.paid; i < pl.count; i++) { const d = planDay(pl, i); if (d > to) break; if (d >= from) out.push({pl, day: d}); } });
+  return out.sort((a, b) => a.day - b.day);
+}
+// A fixed cost that is really an instalment, so it isn't counted twice (the server skips the same ones in its reminders)
+const planCovers = f => bnpl.some(pl => nameKey(f.p.merchant).includes(nameKey(pl.provider)));
+// A new plan, filled in from a recent Tabby or Tamara payment that no plan has claimed: its earliest run of the same amount
+function bnplGuess() {
+  const {used} = bnplState(), free = data.filter(p => spend(p) > 0 && /tabby|tamara/i.test(p.merchant || '') && !used.has(p)).sort((a, b) => b._d - a._d);
+  const last = free[0];
+  if (!last || dayNum(today()) - dayNum(last._d) > 60) return null;
+  const firstPay = free.filter(p => nameKey(p.merchant) === nameKey(last.merchant) && Math.abs(p.amount - last.amount) <= 1 && dayNum(last._d) - dayNum(p._d) <= 150).pop();
+  return {provider: /tamara/i.test(last.merchant) ? 'Tamara' : 'Tabby', amount: last.amount, count: 4, first: isoDate(dayNum(firstPay._d)), every: 'month', note: ''};
+}
+function renderBnpl() {
+  const {state} = bnplState(), td = dayNum(today());
+  let left = 0;
+  const list = bnpl.map(pl => ({pl, s: state.get(pl.id) || {paid: 0, next: null}})).sort((a, b) => (a.s.next == null) - (b.s.next == null) || (a.s.next ?? 0) - (b.s.next ?? 0));
+  $('mBnpl').innerHTML = list.map(({pl, s}) => {
+    const rest = (pl.count - s.paid) * pl.amount, late = s.next != null && s.next < td;
+    left += rest;
+    const sub = s.next == null ? 'All paid' : `${late ? 'Was due' : 'Next'} ${amt(pl.amount)} on ${dayLabel(fromDayNum(s.next), true)}${late ? ', not seen yet' : ''} · ${whole(rest)} left`;
+    return `<button class="lim${late ? ' near' : ''}${s.next == null ? ' dim' : ''}" data-plan="${esc(pl.id)}"><span class="m">${esc(pl.provider)}${pl.note ? ' · ' + esc(pl.note) : ''}</span><span class="a">${s.paid} of ${pl.count} paid</span><span class="bar" role="img" aria-label="${s.paid} of ${pl.count} instalments paid"><i style="width:${(s.paid / pl.count * 100).toFixed(1)}%"></i></span><span class="s">${sub}</span></button>`;
+  }).join('');
+  $('mBnplSum').textContent = !bnpl.length ? 'Add a plan to see what\'s left to pay and get a reminder 2 days before each instalment.' : left > 0 ? `${whole(left)} SAR left to pay` : 'All paid';
+}
+function openBnpl(id) {
+  const pl = bnpl.find(x => x.id === id), g = pl ? null : bnplGuess();
+  const v = pl || g || {provider: 'Tabby', amount: '', count: 4, first: isoDate(dayNum(today())), every: 'month', note: ''};
+  planEdit = pl ? pl.id : null;
+  $('iT').textContent = pl ? 'Instalment plan' : 'New instalment plan';
+  $('iInfo').textContent = g ? `Filled in from your ${g.provider} payments, starting ${dayLabel(fromDayNum(dayNum(new Date(g.first + 'T00:00:00Z'))), true)}. Check the number of instalments.` : 'Payments to the provider of this amount count as paid when they arrive.';
+  const known = ['Tabby', 'Tamara'].includes(v.provider);
+  $('iProv').value = known ? v.provider : ''; $('iOther').value = known ? '' : v.provider; $('iOtherW').hidden = known;
+  $('iAmt').value = v.amount; $('iCount').value = v.count; $('iFirst').value = v.first; $('iEvery').value = v.every; $('iNote').value = v.note || '';
+  $('iDel').hidden = !pl; $('iErr').textContent = '';
+  $('bnplDlg').showModal();
+}
+async function saveBnpl(list) {
+  $('iOk').disabled = true;
+  const op = {kind: 'bnpl', method: 'PUT', q: '?action=bnpl', body: list}, r = await act(op);
+  $('iOk').disabled = false;
+  if (!r.ok) { $('iErr').textContent = r.status === 400 ? 'Check the plan\'s details' : 'Could not save. Check your connection.'; return; }
+  applyOp(op); $('bnplDlg').close(); render();
 }
 
 // ---------- Home ----------
@@ -581,7 +683,8 @@ function planLine(rows, isNow, upto) {
   const left = plan.income - plan.save - rows.reduce((s, p) => s + outflow(p), 0), days = daysIn(vy, vm) - upto + 1;
   el.className = 'plan' + (left < 0 ? ' bad' : '');
   // Bills that usually come later this month (or up to 3 days late) are held back from the daily figure
-  const due = isNow ? fixedCosts().filter(f => !f.paid && f.day > upto - 3).reduce((s, f) => s + f.p.amount, 0) : 0, free = left - due;
+  const monthEnd = dayNum(new Date(Date.UTC(vy, vm, daysIn(vy, vm))));
+  const due = isNow ? fixedCosts().filter(f => !f.paid && f.day > upto - 3 && !planCovers(f)).reduce((s, f) => s + f.p.amount, 0) + instalmentsDue(dayNum(today()) - 2, monthEnd).reduce((s, x) => s + x.pl.amount, 0) : 0, free = left - due;
   el.innerHTML = left < 0 ? `<b>${whole(-left)} over plan</b>` : !isNow ? `<b>${whole(left)}</b> under plan`
     : !due ? `<b>${whole(left)}</b> left · ${whole(left / days)} a day for ${days} day${days === 1 ? '' : 's'}`
     : free > 0 ? `<b>${whole(left)}</b> left · <b>${whole(free / days)} a day</b> after ${whole(due)} of bills still due`
@@ -601,7 +704,7 @@ function forecast(rows, upto) {
   const fixed = fixedCosts(), keys = new Set(fixed.map(f => fixedKey(f.p)));
   let soFar = 0, everyday = 0;
   rows.forEach(p => { const v = outflow(p); soFar += v; if (!keys.has(fixedKey(p))) everyday += v; });
-  const later = fixed.filter(f => !f.paid && f.day > upto).reduce((s, f) => s + f.p.amount, 0);
+  const later = fixed.filter(f => !f.paid && f.day > upto && !planCovers(f)).reduce((s, f) => s + f.p.amount, 0) + instalmentsDue(dayNum(today()) + 1, dayNum(new Date(Date.UTC(vy, vm, daysIn(vy, vm))))).reduce((s, x) => s + x.pl.amount, 0);
   const canSave = Math.round((plan.income - soFar - everyday / upto * (daysIn(vy, vm) - upto) - later) / 50) * 50;
   if (canSave >= plan.save - 100) return '';
   return canSave < 50 ? 'At this pace nothing will be left to save this month.' : `At this pace you can save about ${whole(canSave)} this month, not ${whole(plan.save)}.`;
@@ -719,8 +822,10 @@ async function exportCsv() {
 }
 
 function dueSoon(upto) {
-  const dim = daysIn(vy, vm), due = fixedCosts().filter(f => { const ahead = f.paid ? dim - upto + f.day : f.day - upto; return ahead >= 1 && ahead <= 7; });
-  return due.length ? 'Due this week: ' + due.slice(0, 3).map(f => `${label(f.p)} ${amt(f.p.amount)}`).join(', ') : '';
+  const dim = daysIn(vy, vm), td = dayNum(today());
+  const due = fixedCosts().filter(f => { const ahead = f.paid ? dim - upto + f.day : f.day - upto; return ahead >= 1 && ahead <= 7 && !planCovers(f); }).map(f => ({t: label(f.p), a: f.p.amount}));
+  instalmentsDue(td + 1, td + 7).forEach(x => due.push({t: x.pl.provider, a: x.pl.amount}));
+  return due.length ? 'Due this week: ' + due.sort((a, b) => b.a - a.a).slice(0, 3).map(x => `${x.t} ${amt(x.a)}`).join(', ') : '';
 }
 
 function paceChart(curCum, prevCum, n, pm) {
@@ -825,8 +930,11 @@ function renderMonths() {
   $('mMode').querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === mode)));
   if (mode === 'pay') renderPayday(); else renderCalendar();
   renderFixed();
+  renderBnpl();
   renderHabits();
   balChart();
+  renderNotify();
+  renderBackup(); loadStatus();
 }
 function renderCalendar() {
   const t = today(), now = monthIdx(t), sums = new Map();
@@ -1148,7 +1256,7 @@ function recapCard(isNow) {
     if (ch.length) h += ' ' + ch.map(e => `${esc(e.c)} ${e.d > 0 ? '+' : '−'}${whole(Math.abs(e.d))}`).join(', ') + '.';
   }
   const before = new Set(data.filter(p => monthIdx(p._d) < m).map(p => nameKey(p.merchant)));
-  const fresh = [...new Set(data.filter(p => monthIdx(p._d) === m && spend(p) > 0 && p.merchant && !before.has(nameKey(p.merchant))).map(p => p.merchant))];
+  const fresh = [...new Set(data.filter(p => monthIdx(p._d) === m && spend(p) > 0 && p.kind !== 'transfer_out' && p.merchant && !before.has(nameKey(p.merchant))).map(p => p.merchant))];
   if (fresh.length) h += ` New: ${fresh.slice(0, 3).map(esc).join(', ')}${fresh.length > 3 ? ` and ${fresh.length - 3} more` : ''}.`;
   el.innerHTML = `${h}<button class="x" id="hRecapX" aria-label="Dismiss the recap">${icon('x')}</button>`;
 }
@@ -1187,6 +1295,78 @@ async function catAction(to) {
 
 // ---------- wiring ----------
 $('hPrev').innerHTML = icon('prev'); $('hNext').innerHTML = icon('next');
+// ---------- notifications ----------
+// iPhone shows web notifications only for an app opened from the Home Screen (iOS 16.4 and later).
+const standalone = () => navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+const pushCapable = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const keyBytes = s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), c => c.charCodeAt(0));
+const post = (q, body) => fetch(API + q, {method: 'POST', headers: {...headers(), 'Content-Type': 'application/json'}, body: body ? JSON.stringify(body) : undefined});
+const swReady = () => Promise.race([navigator.serviceWorker.ready, new Promise(r => setTimeout(() => r(null), 3000))]);
+async function pushSub() { const reg = await swReady(); if (reg) swReg = reg; try { return reg ? await reg.pushManager.getSubscription() : null; } catch (e) { return null; } }
+async function renderNotify(msg = '') {
+  const box = $('mNotify');
+  let h;
+  if (!pushCapable()) h = /iPhone|iPad/.test(navigator.userAgent) && !standalone() ? 'To get notifications on iPhone, add this app to your Home Screen (Share, then Add to Home Screen) and open it from there.' : 'This browser can\'t show notifications.';
+  else if (Notification.permission === 'denied') h = 'Notifications are blocked for this app. Turn them on in Settings, Notifications, Spending.';
+  else {
+    const sub = await pushSub();
+    if (!swReg) h = 'Notifications aren\'t available here.';
+    else if (sub && Notification.permission === 'granted') h = `<div class="label"><b>On for this phone.</b> Your week on Thursday evening, last month on the 1st, bills and instalments 2 days ahead, limits, and no SMS for 3 days.</div><div class="acts"><button class="btn" id="nTest">Send a test</button><button class="btn" id="nOff">Turn off</button></div>`;
+    else {
+      h = '<button class="goal setup" id="nOn"><b>Turn on notifications</b><span class="label">Your week on Thursday evening, last month on the 1st, bills and Tabby or Tamara 2 days ahead, a category at 80% of its limit or over, and a warning if no SMS arrive for 3 days.</span></button>';
+      // The server's key is fetched now, so the tap goes straight to the permission prompt and the subscription
+      if (!pushKey) fetch(`${API}?action=push-key`, {headers: headers()}).then(r => r.ok ? r.json() : null).then(j => { if (j && j.key) { pushKey = j.key; store.set('pushKey', j.key); } }).catch(() => {});
+    }
+  }
+  box.innerHTML = (h.startsWith('<') ? h : `<div class="label">${esc(h)}</div>`) + (msg ? `<div class="hint">${esc(msg)}</div>` : '');
+}
+async function turnOnPush() {
+  const asked = Notification.requestPermission(); // first, while the tap still counts as one
+  let perm;
+  try { perm = asked ? await asked : Notification.permission; } catch (e) { perm = Notification.permission; }
+  if (perm !== 'granted') return renderNotify(perm === 'denied' ? '' : 'Notifications weren\'t allowed.');
+  try {
+    pushKey ||= store.get('pushKey', null);
+    if (!swReg || !pushKey) throw new Error('not ready');
+    const key = keyBytes(pushKey);
+    let sub = await swReg.pushManager.getSubscription();
+    const same = x => { try { const k = new Uint8Array(x.options.applicationServerKey); return k.length === key.length && k.every((b, i) => b === key[i]); } catch (e) { return true; } };
+    if (sub && !same(sub)) { await sub.unsubscribe(); sub = null; }
+    sub ||= await swReg.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: key});
+    if (!(await post('?action=subscribe', sub.toJSON())).ok) throw new Error('subscribe');
+    store.set('pushAt', Date.now());
+    const t = await post('?action=push-test').then(r => r.json()).catch(() => ({}));
+    renderNotify(t.sent ? 'A test notification is on its way.' : 'Turned on, but the test didn\'t arrive. Try "Send a test" in a minute.');
+  } catch (e) { renderNotify('Could not turn on notifications. Check your connection and try again.'); }
+}
+async function testPush() {
+  try { const j = await (await post('?action=push-test')).json(); renderNotify(j.sent ? 'Sent. It should arrive in a few seconds.' : 'The server couldn\'t reach this phone. Turn notifications off and on again.'); }
+  catch (e) { renderNotify('Could not reach the server.'); }
+}
+async function turnOffPush() {
+  try {
+    const sub = await pushSub();
+    if (sub) { await post('?action=unsubscribe', {endpoint: sub.endpoint}).catch(() => {}); await sub.unsubscribe(); }
+    store.del('pushAt'); renderNotify('Notifications are off for this phone.');
+  } catch (e) { renderNotify('Could not turn them off. Try again.'); }
+}
+// A subscribed phone tells the server again once a day, in case the server dropped it
+async function syncPush() {
+  if (!pushCapable() || Notification.permission !== 'granted' || Date.now() - store.get('pushAt', 0) < DAY_MS) return;
+  const sub = await pushSub();
+  if (sub) try { if ((await post('?action=subscribe', sub.toJSON())).ok) store.set('pushAt', Date.now()); } catch (e) {}
+}
+// ---------- backup ----------
+async function loadStatus() {
+  if (Date.now() - statusAt < 60e3) return;
+  statusAt = Date.now();
+  try { const r = await fetch(`${API}?action=status`, {headers: headers()}); if (r.ok) { srvStatus = await r.json(); store.set('status', srvStatus); renderBackup(); } } catch (e) {}
+}
+function renderBackup() {
+  const b = (srvStatus || store.get('status', null) || {}).last_backup;
+  $('mBackup').textContent = 'Every Thursday a copy of your payments, rules, limits and plans is saved in Supabase, and the last 12 are kept.' + (b ? ` Latest: ${dayLabel(new Date(Date.parse(b.at) + RIYADH), true)}, ${whole(b.payments)} payments.` : '');
+}
+
 const moveMonth = k => { const m = vy * 12 + vm + k; vy = Math.floor(m / 12); vm = m % 12; showAllCats = false; renderHome(); };
 $('hPrev').onclick = () => moveMonth(-1);
 $('hNext').onclick = () => moveMonth(1);
@@ -1216,6 +1396,19 @@ $('mMode').onclick = e => { const b = e.target.closest('button'); if (b) { store
 $('mLimits').onclick = e => { if (e.target.closest('#mLimSet')) return openLimits(); const b = e.target.closest('[data-cat]'); if (b) openCategory(b.dataset.cat); };
 $('mLimEdit').onclick = () => openLimits();
 $('mCats').onclick = () => openCats();
+$('mBnpl').onclick = e => { const b = e.target.closest('[data-plan]'); if (b) openBnpl(b.dataset.plan); };
+$('mBnplAdd').onclick = () => openBnpl();
+$('iProv').onchange = () => { $('iOtherW').hidden = !!$('iProv').value; if (!$('iProv').value) $('iOther').focus(); };
+$('iOk').onclick = () => {
+  const provider = ($('iProv').value || $('iOther').value).trim(), amount = num($('iAmt').value), count = num($('iCount').value), first = $('iFirst').value;
+  const err = !provider ? 'Type the provider\'s name as it appears on your payments' : !(amount > 0) ? 'Type the amount of each instalment' : !(Number.isInteger(count) && count >= 1 && count <= 36) ? 'The number of instalments is a whole number from 1 to 36' : !/^\d{4}-\d\d-\d\d$/.test(first) ? 'Choose the date of the first instalment' : '';
+  if (err) { $('iErr').textContent = err; return; }
+  const plan = {id: planEdit || crypto.randomUUID(), provider, amount: Math.round(amount * 100) / 100, count, first, every: $('iEvery').value, note: $('iNote').value.trim() || null};
+  saveBnpl(planEdit ? bnpl.map(x => x.id === planEdit ? plan : x) : [...bnpl, plan]);
+};
+$('iDel').onclick = () => { if (confirm('Delete this plan? Its payments stay.')) saveBnpl(bnpl.filter(x => x.id !== planEdit)); };
+$('iCancel').onclick = () => $('bnplDlg').close();
+$('mNotify').onclick = e => { if (e.target.closest('#nOn')) turnOnPush(); else if (e.target.closest('#nTest')) testPush(); else if (e.target.closest('#nOff')) turnOffPush(); };
 $('hBal').onclick = () => openBal();
 $('hBal').onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openBal(); } };
 $('hRecap').onclick = e => { if (e.target.closest('#hRecapX')) { store.set('recapSeen', monthIdx(today()) - 1); $('hRecap').hidden = true; } };
