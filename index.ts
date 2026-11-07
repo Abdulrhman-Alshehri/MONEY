@@ -12,6 +12,7 @@ const norm = (s: string) => s
 const merchantKey = (m: string | null) => (m ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
 
 const KEYWORDS: [RegExp, string][] = [
+  [/^ATM cash withdrawal$/, 'Cash withdrawal'],
   [/jeeny|bolt|uber|careem|taxi/i, 'Transport'],
   [/noon|panda|tamimi|othaim|lulu|danube/i, 'Groceries'],
   [/hunger|jahez|mrsool|toyo|keeta|ninja/i, 'Food & Cafes'],
@@ -24,7 +25,7 @@ function parse(t: string) {
   if (/otp|\bcode\b|رمز|كلمة المرور|التحقق/i.test(text)) return null; // never store login codes
   const am = text.match(/SAR\s*([\d,]+(?:\.\d+)?)/i) ?? text.match(/([\d,]+(?:\.\d+)?)\s*SAR/i);
   const amount = am ? parseFloat(am[1].replace(/,/g, '')) : null;
-  let type = 'other', kind = 'unknown', merchant: string | null = null;
+  let type = 'other', kind = 'unknown', merchant: string | null = null, city: string | null = null;
   const isIn = /وارد/.test(text);
   const head = text.split(/SAR|\d/)[0]; // the message type: the words before the first number or SAR
   if (/رواتب|راتب/.test(head) && !/صادر/.test(head)) {
@@ -36,9 +37,13 @@ function parse(t: string) {
     merchant = text.match(/\d{4}\*?\s*([^\d*]+?)\s*\d{2}\/\d{2}\/\d{2}/)?.[1]?.trim() ?? null;
   } else if (/رواتب|راتب/.test(text)) {
     type = 'bank'; kind = 'income'; merchant = 'Salary';
-  } else if (/إيداع/.test(text)) {
+  } else if (/سحب\s*نقدي/.test(text)) {
+    // Cash taken from an ATM. It counts as spending, since the cash gets spent; the ATM's location is kept as the city.
+    type = 'atm'; kind = 'purchase'; merchant = 'ATM cash withdrawal';
+    city = text.match(/موقع\s*(.+?)\s*في/)?.[1]?.trim() ?? null;
+  } else if (/[إا]يداع/.test(text)) { // SNB writes it with and without the hamza
     type = 'atm'; kind = 'cash_in'; merchant = 'Cash deposit';
-  } else if (/إعادة|استرداد|عكس|مرتجع/.test(text)) {
+  } else if (/[إا]عادة|استرداد|عكس|مرتجع/.test(text)) {
     type = 'pos'; kind = 'refund';
     merchant = text.match(/من\s+(?![*\d])(.+?)\s*(?:مدى|في|$)/)?.[1]?.trim() ?? null;
   } else if (/شراء|خصم|سداد/.test(text)) {
@@ -53,7 +58,7 @@ function parse(t: string) {
     const e = text.match(/(\d{2})\/(\d{2})\/(\d{2})\s+(\d{2}):(\d{2})/);
     if (e) occurred_at = `20${e[3]}-${e[2]}-${e[1]}T${e[4]}:${e[5]}:00+03:00`;
   }
-  return { amount, type, kind, merchant, occurred_at };
+  return { amount, type, kind, merchant, occurred_at, city };
 }
 
 async function categorize(kind: string, merchant: string | null) {
@@ -68,6 +73,13 @@ async function categorize(kind: string, merchant: string | null) {
   if (kind === 'transfer_out') return 'Transfers';
   for (const [re, c] of KEYWORDS) if (merchant && re.test(merchant)) return c;
   return 'Uncategorized';
+}
+
+// A name the user gave a merchant with Rename, applied to new SMS before their category is chosen.
+async function aliasOf(merchant: string | null) {
+  if (!merchant) return merchant;
+  const { data } = await db.from('merchant_aliases').select('name').eq('merchant_key', merchantKey(merchant)).maybeSingle();
+  return data?.name ?? merchant;
 }
 
 const PAGE = 1000; // Supabase returns at most 1000 rows per request unless the project setting says otherwise
@@ -109,6 +121,33 @@ function counts(p: any) {
 const sentToPeople = (p: any) => (!p.excluded && p.kind === 'transfer_out' && p.category === 'Transfers' ? num(p.amount) : 0);
 // deno-lint-ignore no-explicit-any
 const sameMerchant = (rows: any[], key: string) => rows.filter((p) => merchantKey(p.merchant) === key && !INCOMING.includes(p.kind)).map((p) => p.id);
+const side = (kind: string) => (['purchase', 'fee', 'transfer_out'].includes(kind) ? 'out' : ['refund', ...INCOMING].includes(kind) ? 'in' : null);
+
+// Statement rows that SMS already saved: the same amount and direction, within 3 minutes of an SMS row that no statement
+// row has claimed yet. The SMS row keeps its merchant, category, note and text, and takes the statement's ref, seq,
+// balance, city and MCC, so the payment counts once and the balance line runs through it. Unrecognised SMS never match.
+// deno-lint-ignore no-explicit-any
+async function matchSms(rows: any[]) {
+  // deno-lint-ignore no-explicit-any
+  const out = new Map<any, string>();
+  const times = rows.map((r) => Date.parse(r.occurred_at)).filter(Number.isFinite);
+  if (!times.length) return out;
+  const from = new Date(Math.min(...times) - DAY).toISOString(), to = new Date(Math.max(...times) + DAY).toISOString();
+  const { data, error } = await readAll(() => db.from('payments').select('id,amount,kind,occurred_at').eq('source', 'sms').is('ref', null)
+    .gte('occurred_at', from).lte('occurred_at', to).order('created_at').order('id'));
+  if (error) throw new Error(error.message);
+  const free = data.filter((s) => s.amount != null && s.occurred_at && side(s.kind));
+  for (const r of rows) {
+    const t = Date.parse(r.occurred_at);
+    let best = null, gap = 3 * 60e3 + 1;
+    for (const s of free) {
+      const d = Math.abs(Date.parse(s.occurred_at) - t);
+      if (d < gap && side(s.kind) === side(r.kind) && Math.abs(num(s.amount) - num(r.amount)) < 0.005) { best = s; gap = d; }
+    }
+    if (best) { out.set(r, best.id); free.splice(free.indexOf(best), 1); }
+  }
+  return out;
+}
 // Runs of 5+ days with no payments at all that touch [from, to] (day numbers), clipped to it: totals there are incomplete.
 // Each run is measured in full, so the 4 empty days that start a month count when they end a longer gap.
 // The same rules as gaps() and incomplete() in index.html. Here `days` begins with the day before the rows that were
@@ -134,6 +173,7 @@ async function summarize() {
   const { data, error } = await readAll(() => db.from('payments').select('id,amount,kind,category,excluded,occurred_at,created_at')
     .or(`occurred_at.gte."${from}",and(occurred_at.is.null,created_at.gte."${from}")`).order('created_at').order('id'));
   if (error) throw new Error(error.message);
+  const { data: lim } = await db.from('category_limits').select('category,monthly');
   let spent = 0, sent = 0, lastSame = 0, lastTotal = 0, lastSeen = false;
   const seen = new Set<number>(), byCat = new Map<string, number>();
   for (const p of data) {
@@ -162,6 +202,7 @@ async function summarize() {
     // Biggest categories this month, as totals() in index.html: refunds already taken off
     top: [...byCat].filter(([, v]) => v > 0.5).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([category, v]) => ({ category, amount: round2(v) })),
     categories: Object.fromEntries([...byCat].map(([c, v]) => [c, round2(v)])), // every category this month, for the SMS notice
+    limits: Object.fromEntries((lim ?? []).map((l) => [l.category, num(l.monthly)])), // monthly limits the user set
     text,
   };
 }
@@ -171,7 +212,8 @@ async function summarize() {
 // deno-lint-ignore no-explicit-any
 function notice(p: any, category: string, s: any) {
   const a = p.amount == null ? '?' : exact(num(p.amount)), who = p.merchant ?? 'someone';
-  const cat = s ? `${category}: ${whole(s.categories[category] ?? 0)} this month · ${whole(s.spent)} total` : category;
+  const lim = s?.limits?.[category];
+  const cat = s ? `${category}: ${whole(s.categories[category] ?? 0)}${lim ? ` of ${whole(lim)}` : ''} this month · ${whole(s.spent)} total` : category;
   switch (p.kind) {
     case 'purchase': case 'fee': return `${p.merchant ?? 'Payment'} ${a} · ${cat}`;
     case 'refund': return `Refund ${a} from ${p.merchant ?? 'a shop'} · ${cat}`;
@@ -193,6 +235,88 @@ Deno.serve(async (req) => {
 
   if (req.method === 'GET' && action === 'summary') {
     try { return json(await summarize()); } catch (e) { return json({ error: (e as Error).message }, 500); }
+  }
+
+  // The SHA-256 of this file as deployed, so a deploy can be checked against the repo without copying the code back
+  if (req.method === 'GET' && action === 'version') {
+    try {
+      const src = new TextEncoder().encode(await Deno.readTextFile(new URL(import.meta.url)));
+      return json({ sha256: [...new Uint8Array(await crypto.subtle.digest('SHA-256', src))].map((b) => b.toString(16).padStart(2, '0')).join('') });
+    } catch (e) { return json({ sha256: null, error: (e as Error).message }); }
+  }
+
+  // Monthly limits per category. PUT sends the whole set: a category left out loses its limit.
+  if (action === 'limits' && req.method === 'GET') {
+    const { data, error } = await db.from('category_limits').select('category,monthly').order('category');
+    return error ? json({ error: error.message }, 500) : json(data);
+  }
+  if (action === 'limits' && req.method === 'PUT') {
+    const list = await req.json();
+    if (!Array.isArray(list) || list.some((l) => typeof l?.category !== 'string' || !l.category || !(Number(l.monthly) > 0))) return json({ error: 'expected [{category, monthly}]' }, 400);
+    const now = new Date().toISOString();
+    if (list.length) {
+      const { error } = await db.from('category_limits').upsert(list.map((l) => ({ category: l.category, monthly: round2(Number(l.monthly)), updated_at: now })));
+      if (error) return json({ error: error.message }, 500);
+    }
+    const { data: have, error: e1 } = await db.from('category_limits').select('category');
+    if (e1) return json({ error: e1.message }, 500);
+    const gone = (have ?? []).map((l) => l.category).filter((c) => !list.some((l) => l.category === c));
+    if (gone.length) { const { error } = await db.from('category_limits').delete().in('category', gone); if (error) return json({ error: error.message }, 500); }
+    return json({ ok: true, limits: list.length });
+  }
+
+  // Rename a merchant: this payment only, or with `all` every payment with the same name (capitals and spacing don't
+  // matter) plus new SMS and statement rows. A category rule for the old name carries over to the new one.
+  if (req.method === 'POST' && action === 'rename') {
+    const b = await req.json();
+    const name = typeof b.name === 'string' ? b.name.trim().replace(/\s+/g, ' ').slice(0, 80) : '';
+    if (!b.id || !name) return json({ error: 'id and name required' }, 400);
+    const { data: row, error: e1 } = await db.from('payments').select('merchant').eq('id', b.id).single();
+    if (e1) return json({ error: e1.message }, 404);
+    if (!b.all || !row.merchant) {
+      const { error } = await db.from('payments').update({ merchant: name }).eq('id', b.id);
+      return error ? json({ error: error.message }, 500) : json({ ok: true, updated: 1 });
+    }
+    const key = merchantKey(row.merchant), now = new Date().toISOString();
+    const { data: all, error: e2 } = await readAll(() => db.from('payments').select('id,merchant').not('merchant', 'is', null).order('created_at').order('id'));
+    if (e2) return json({ error: e2.message }, 500);
+    const ids = all.filter((p) => merchantKey(p.merchant) === key).map((p) => p.id);
+    for (let i = 0; i < ids.length; i += 200) {
+      const { error } = await db.from('payments').update({ merchant: name }).in('id', ids.slice(i, i + 200));
+      if (error) return json({ error: error.message }, 500);
+    }
+    // New rows with the old name, and names that were earlier renamed to it, become the new name
+    const { data: aliases, error: e3 } = await db.from('merchant_aliases').select('merchant_key,name');
+    if (e3) return json({ error: e3.message }, 500);
+    const repoint = (aliases ?? []).filter((a) => merchantKey(a.name) === key && a.merchant_key !== key).map((a) => ({ merchant_key: a.merchant_key, name, updated_at: now }));
+    const { error: e4 } = await db.from('merchant_aliases').upsert([{ merchant_key: key, name, updated_at: now }, ...repoint]);
+    if (e4) return json({ error: e4.message }, 500);
+    const { data: rule } = await db.from('merchant_rules').select('category').eq('merchant_key', key).maybeSingle();
+    if (rule && merchantKey(name) !== key) {
+      const { data: has } = await db.from('merchant_rules').select('category').eq('merchant_key', merchantKey(name)).maybeSingle();
+      if (!has) await db.from('merchant_rules').insert({ merchant_key: merchantKey(name), category: rule.category, updated_at: now });
+    }
+    return json({ ok: true, updated: ids.length });
+  }
+
+  // Rename, merge or delete a category everywhere: payments, rules and limits. Deleting moves it to Uncategorized.
+  if (req.method === 'POST' && action === 'category') {
+    const b = await req.json();
+    const from = typeof b.from === 'string' ? b.from : '', to = typeof b.to === 'string' ? b.to.trim().replace(/\s+/g, ' ').slice(0, 40) : '';
+    if (!from || !to || from === to) return json({ error: 'from and to required' }, 400);
+    const { data: moved, error } = await db.from('payments').update({ category: to }).eq('category', from).select('id');
+    if (error) return json({ error: error.message }, 500);
+    const { error: e1 } = await db.from('merchant_rules').update({ category: to, updated_at: new Date().toISOString() }).eq('category', from);
+    if (e1) return json({ error: e1.message }, 500);
+    const { data: lim, error: e2 } = await db.from('category_limits').select('category,monthly').in('category', [from, to]);
+    if (e2) return json({ error: e2.message }, 500);
+    const old = (lim ?? []).find((l) => l.category === from);
+    if (old) {
+      // A merge keeps the limit already on the target; Uncategorized never gets one
+      if (to !== 'Uncategorized' && !(lim ?? []).some((l) => l.category === to)) await db.from('category_limits').insert({ category: to, monthly: old.monthly });
+      await db.from('category_limits').delete().eq('category', from);
+    }
+    return json({ ok: true, updated: moved?.length ?? 0 });
   }
 
   if (req.method === 'GET') {
@@ -236,29 +360,53 @@ Deno.serve(async (req) => {
     if (e) return json({ error: e.message }, 500);
     const seen = new Set((have ?? []).map((r) => r.ref));
     const fresh = rows.filter((r: { ref: string }) => !seen.has(r.ref));
-    // Your rules win over the statement's guess, as they do for SMS. Money received keeps its own category.
+    // Rows SMS already saved go onto those SMS rows instead of being added again
+    // deno-lint-ignore no-explicit-any
+    let matched: Map<any, string>;
+    try { matched = await matchSms(fresh); } catch (err) { return json({ error: (err as Error).message }, 500); }
+    for (const [r, smsRow] of matched) {
+      const patch: Record<string, unknown> = { ref: r.ref, seq: r.seq ?? null, balance: r.balance ?? null };
+      if (r.city) patch.city = r.city;
+      if (r.mcc) patch.mcc = r.mcc;
+      const { error } = await db.from('payments').update(patch).eq('id', smsRow);
+      if (error) return json({ error: error.message }, 500);
+    }
+    // deno-lint-ignore no-explicit-any
+    const add = fresh.filter((r: any) => !matched.has(r));
+    // Your renames and rules win over the statement's guess, as they do for SMS. Money received keeps its own category.
+    const { data: aliases, error: e2 } = await db.from('merchant_aliases').select('merchant_key,name');
+    if (e2) return json({ error: e2.message }, 500);
+    const alias = new Map((aliases ?? []).map((a) => [a.merchant_key, a.name]));
     const { data: rules, error: e3 } = await readAll(() => db.from('merchant_rules').select('merchant_key,category').order('merchant_key'));
     if (e3) return json({ error: e3.message }, 500);
     const rule = new Map(rules.map((r) => [r.merchant_key, r.category]));
     let ruled = 0;
-    for (const r of fresh) {
+    for (const r of add) {
+      if (r.merchant && alias.has(merchantKey(r.merchant))) r.merchant = alias.get(merchantKey(r.merchant));
       const c = r.merchant ? rule.get(merchantKey(r.merchant)) : undefined;
       if (c && !INCOMING.includes(r.kind) && r.category !== c) { r.category = c; ruled++; }
     }
-    if (fresh.length) { const { error } = await db.from('payments').insert(fresh); if (error) return json({ error: error.message }, 500); }
-    return json({ ok: true, received: rows.length, inserted: fresh.length, categorized_by_rules: ruled });
+    if (add.length) { const { error } = await db.from('payments').insert(add); if (error) return json({ error: error.message }, 500); }
+    return json({ ok: true, received: rows.length, inserted: add.length, matched_sms: matched.size, categorized_by_rules: ruled });
   }
 
   if (req.method === 'POST') {
     const body = await req.text();
-    let raw = body;
-    try { const j = JSON.parse(body); raw = j.text ?? j.message ?? body; } catch { /* plain text */ }
+    let raw = body, smsId: string | null = null;
+    try {
+      const j = JSON.parse(body);
+      raw = String(j.text ?? j.message ?? body);
+      // An id from a Shortcut that queues SMS while offline: the same id sent again is ignored, so retries are safe
+      if (typeof j.id === 'string' && /^[\w.:-]{1,100}$/.test(j.id)) smsId = j.id;
+    } catch { /* plain text */ }
     if (!raw.trim()) return json({ error: 'empty' }, 400);
     const p = parse(raw);
     if (!p) return json({ ok: true, ignored: true });
+    p.merchant = await aliasOf(p.merchant);
     const category = await categorize(p.kind, p.merchant);
     // Unrecognised messages (e.g. promos containing SAR) are kept for review but never counted.
-    const { error } = await db.from('payments').insert({ raw_text: raw, source: 'sms', category, excluded: p.kind === 'unknown', ...p });
+    const { error } = await db.from('payments').insert({ raw_text: raw, source: 'sms', category, excluded: p.kind === 'unknown', sms_id: smsId, ...p });
+    if (error && error.code === '23505' && smsId) return json({ ok: true, duplicate: true });
     if (error) return json({ error: error.message }, 500);
     let s = null;
     try { s = await summarize(); } catch { /* the notice just leaves out the month total */ }

@@ -20,11 +20,13 @@ create table public.payments (
   ref text,                                        -- statement dedupe key
   seq integer,                                     -- bank order across statements, keeps the balance line correct
   note text,
-  excluded boolean not null default false          -- true = left out of all totals
+  excluded boolean not null default false,         -- true = left out of all totals
+  sms_id text                                      -- id from a Shortcut that queues SMS offline; a repeat is ignored
 );
 alter table public.payments enable row level security;
 
 create unique index payments_ref_key on public.payments (ref) where ref is not null;
+create unique index payments_sms_id_key on public.payments (sms_id) where sms_id is not null;
 create index payments_occurred_at_idx on public.payments (occurred_at desc);
 
 create table public.merchant_rules (
@@ -33,3 +35,17 @@ create table public.merchant_rules (
   updated_at timestamptz not null default now()
 );
 alter table public.merchant_rules enable row level security;
+
+create table public.merchant_aliases (
+  merchant_key text primary key,                   -- merchantKey() of the name as the bank writes it
+  name text not null,                              -- the name to use instead (Rename in the app)
+  updated_at timestamptz not null default now()
+);
+alter table public.merchant_aliases enable row level security;
+
+create table public.category_limits (
+  category text primary key,
+  monthly numeric not null check (monthly > 0),    -- the most to spend in this category in a calendar month
+  updated_at timestamptz not null default now()
+);
+alter table public.category_limits enable row level security;

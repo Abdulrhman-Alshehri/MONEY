@@ -45,31 +45,44 @@ Every request needs `x-api-key: <APP_TOKEN>`, or it gets `401 {"error":"unauthor
 
 ### POST (no query): ingest an SMS
 
-Body: the SMS as plain text, or JSON with `text` or `message`.
+Body: the SMS as plain text, or JSON with `text` or `message`. JSON may also carry an `id` (letters, digits, `_ . : -`, up to 100): a Shortcut that queues SMS while offline sends one, and a repeated `id` returns `{"ok":true,"duplicate":true}` without saving or a notice, so retries are safe. Without an `id`, identical SMS are all kept, since they can be real.
 
 ```json
 {"ok":true,"category":"Transport","amount":16.75,"type":"online","kind":"purchase","merchant":"Jeeny","occurred_at":"2026-11-05T09:30:00+03:00","notice":"Jeeny 16.75 · Transport: 410 this month · 3,240 total"}
 ```
 
-- `notice` is one line for the Shortcut's notification, made by `notice()`: the payment, its category's total this month (from the summary's `categories`), and all spending this month. Transfers, salary and savings get their own wording. It leaves out the totals if `summarize()` fails.
+- New SMS go through your renames (`merchant_aliases`) before their category is chosen.
+- `notice` is one line for the Shortcut's notification, made by `notice()`: the payment, its category's total this month (from the summary's `categories`) with its limit if one is set ("Food & Cafes: 640 of 1,500 this month"), and all spending this month. Transfers, salary and savings get their own wording. It leaves out the totals if `summarize()` fails.
 
 - `400 {"error":"empty"}` for an empty body, which is what a manual Shortcut run sends.
 - `{"ok":true,"ignored":true}` for messages that look like login codes; nothing is stored.
 
 ### POST ?action=import: bulk insert
 
-Body: JSON array of rows with the `payments` columns. Rows whose `ref` already exists are skipped. `merchant_rules` are applied to the new rows, except money received (`transfer_in`, `income`, `cash_in`).
+Body: JSON array of rows with the `payments` columns. Rows whose `ref` already exists are skipped. A row that SMS already saved (see "Statement and SMS overlap") is attached to that SMS row instead of being added. Renames and `merchant_rules` are applied to the new rows; rules skip money received (`transfer_in`, `income`, `cash_in`).
 
 ```json
-{"ok":true,"received":432,"inserted":432,"categorized_by_rules":12}
+{"ok":true,"received":432,"inserted":420,"matched_sms":12,"categorized_by_rules":12}
 ```
+
+### POST ?action=rename: rename a merchant
+
+`{"id":"uuid","name":"Laundry","all":true}`. Without `all`, only that payment changes. With `all`, every payment whose `merchantKey()` matches, and new SMS and statement rows through `merchant_aliases`; earlier renames to the old name follow, and a category rule for the old name is copied to the new one. Returns `{"ok":true,"updated":n}`.
+
+### POST ?action=category: rename, merge or delete a category
+
+`{"from":"Doha Trip","to":"Travel"}` changes the category on payments and rules everywhere. Its limit moves too, unless the target already has one. Deleting is a move to `Uncategorized`, which never gets a limit. Returns `{"ok":true,"updated":n}`.
+
+### GET and PUT ?action=limits: monthly category limits
+
+GET returns `[{"category":"Food & Cafes","monthly":1500}]`. PUT sends the whole set in the same shape; categories left out lose their limit, and a limit must be above 0.
 
 ### GET ?action=summary: this month in numbers
 
 For the widget, Siri and the SMS notice. Riyadh time; computed by `summarize()` with `counts()`, which **must match `spend()` in `index.html`** (a test compares them on the same data).
 
 ```json
-{"month":"2026-11","day":6,"days_in_month":30,"spent":2376.59,"sent":303,"last_month":"October","last_same_day":3456.54,"last_total":7629.04,"comparable":true,"stale_days":0,"gaps":[],"top":[{"category":"Food & Cafes","amount":688.45},{"category":"Groceries","amount":412.3},{"category":"Transport","amount":230}],"categories":{"Food & Cafes":688.45,"Groceries":412.3,"Transport":230,"Bills & Telecom":215,"Shopping":199.99,"Fuel":180,"Subscriptions":150.5,"Health":98.35,"Entertainment":85,"Personal Care":70,"Uncategorized":47},"text":"You've spent 2,377 riyals this month, 1,080 less than October by this day."}
+{"month":"2026-11","day":6,"days_in_month":30,"spent":2376.59,"sent":303,"last_month":"October","last_same_day":3456.54,"last_total":7629.04,"comparable":true,"stale_days":0,"gaps":[],"top":[{"category":"Food & Cafes","amount":688.45},{"category":"Groceries","amount":412.3},{"category":"Transport","amount":230}],"categories":{"Food & Cafes":688.45,"Groceries":412.3,"Transport":230,"Bills & Telecom":215,"Shopping":199.99,"Fuel":180,"Subscriptions":150.5,"Health":98.35,"Entertainment":85,"Personal Care":70,"Uncategorized":47},"limits":{"Food & Cafes":1500},"text":"You've spent 2,377 riyals this month, 1,080 less than October by this day."}
 ```
 
 - `sent`: money sent to people (`transfer_out` in `Transfers`), which the plan's "left" subtracts too.
@@ -77,6 +90,7 @@ For the widget, Siri and the SMS notice. Riyadh time; computed by `summarize()` 
 - `gaps`: those runs from the start of last month to the latest payment, clipped to that period, as `[from, to]` dates (Riyadh, `YYYY-MM-DD`). The dashboard's "No data" warning shows the same ones. `gaps()` here repeats `gaps()` and `incomplete()` in `index.html`; a test compares them.
 - `top`: this month's 3 biggest categories by `counts()`, refunds taken off, as "Where it went" on Home.
 - `categories`: every category's spending this month, the same way. The SMS notice reads the payment's category from it.
+- `limits`: the monthly limits from `category_limits`.
 
 ### GET: list payments
 
@@ -128,9 +142,19 @@ The exact definition is in `supabase/schema.sql`. RLS is enabled with no policie
 
 Neither has a database constraint, so new values won't error. The frontend must handle them.
 
+`sms_id` (text, unique when not null) holds the `id` a queuing Shortcut sends with an SMS, so a retry isn't saved twice.
+
 ### merchant_rules
 
-`merchant_key` (primary key, from `merchantKey()`: lowercase, single spaces, trimmed), `category`, `updated_at`. Read when an SMS is ingested (purchases and outgoing transfers) and on statement import (everything except money received), and written by PATCH.
+`merchant_key` (primary key, from `merchantKey()`: lowercase, single spaces, trimmed), `category`, `updated_at`. Read when an SMS is ingested (purchases and outgoing transfers) and on statement import (everything except money received), and written by PATCH, rename and the category action.
+
+### merchant_aliases
+
+`merchant_key` (primary key, `merchantKey()` of the name as the bank writes it), `name` (the name to use), `updated_at`. Written by rename with `all`, and applied to new SMS and imported statement rows.
+
+### category_limits
+
+`category` (primary key), `monthly` (above 0), `updated_at`. A calendar month's limit for one category, set in the app.
 
 ## SMS pipeline
 
@@ -146,12 +170,13 @@ Invisible characters are removed and whitespace collapsed, then, **first match w
 | 2 | `رواتب` or `راتب` in the message type (the words before the first number or `SAR`), and no `صادر` there | `bank`, `income`, merchant `Salary`. This is how `حوالة واردة راتب` arrives. Checking only the type keeps a transfer from a person named راتب a transfer |
 | 3 | `حوالة` or `تحويل` | `transfer`. `transfer_in` if it contains `وارد`, else `transfer_out` |
 | 4 | `رواتب` or `راتب` anywhere | `bank`, `income`, merchant `Salary` |
-| 5 | `إيداع` | `atm`, `cash_in`, merchant `Cash deposit` |
-| 6 | `إعادة`, `استرداد`, `عكس`, `مرتجع` | `pos`, `refund` |
+| 4b | `سحب نقدي` | `atm`, `purchase`, merchant `ATM cash withdrawal`, category `Cash withdrawal` (counted as spending). The text after `موقع` becomes the city |
+| 5 | `إيداع` or `ايداع` | `atm`, `cash_in`, merchant `Cash deposit` |
+| 6 | `إعادة`, `اعادة`, `استرداد`, `عكس`, `مرتجع` | `pos`, `refund` |
 | 7 | `شراء`, `خصم`, `سداد` | `purchase`. Type `pos` if it contains `POS`, `intl` if `دولي`, else `online` |
 | 8 | Anything else | `unknown`, stored with `excluded=true` |
 
-**Checked against real SMS:** online purchase, POS purchase, salary (`حوالة واردة راتب`), outgoing local transfer, incoming internal transfer. **Steps 4 to 6 are unconfirmed guesses** based on statement wording, and need checking against real messages when they arrive.
+**Checked against real SMS:** online purchase, POS purchase, salary (`حوالة واردة راتب`), outgoing local transfer, incoming internal transfer, cash withdrawal (`سحب نقدي بالريال - صراف الأهلي ... موقع ...`), cash deposit (`ايداع صراف آلي`, no hamza) and POS refund (`اعادة مبلغ-POS`, no hamza). **Step 4 is still a guess** based on statement wording.
 
 The trigger is any message containing `SAR`, so promotions and messages from other senders reach this code. That's why step 7 exists.
 
@@ -213,7 +238,7 @@ The balance makes this unique even for identical payments in the same minute. Du
 
 ### Statement and SMS overlap
 
-**Not handled.** Statement rows have no link to SMS rows, so importing a period SMS already covers counts those payments twice. Before such an import, either skip dates already covered by SMS or match them (same minute and amount) and remove one, after asking the user. The dashboard's balance also relies on statement rows only.
+The import matches them. A statement row with the same amount and direction as an SMS row within 3 minutes, which no other statement row has claimed, is attached to that SMS row: the SMS row keeps its merchant, category, note and text, and takes the statement's `ref`, `seq`, `balance`, city and MCC. So the payment counts once, the balance line runs through it, and SMS that never arrived are filled in by the statement. Unrecognised (`unknown`) SMS never match. Check `matched_sms` in the import's answer against the number of SMS in the statement's period.
 
 ### Transaction types
 
@@ -390,9 +415,8 @@ Invoke-RestMethod -Method Post -Uri $env:SMS_URL -Headers @{"x-api-key"=$env:APP
 
 | Issue | Impact | Suggested fix |
 |---|---|---|
-| No SMS and statement matching | Double counting if periods overlap | Match on minute and amount during import |
 | One shared token, no rate limiting | A weak token can be guessed | Long random token; consider real auth |
-| Generic statement merchant names | Weak merchant ranking | Add a merchant rename feature with an alias table |
+| Generic statement merchant names | Labels such as `Online: Food` cover several shops, so renaming one for all renames them all | Rename those payments one at a time |
 | Spending and gap rules exist twice | `spend()` and the gap rules in the dashboard, and `counts()` and `gaps()` in the summary (widget, Siri, notice), must stay identical | Keep the consistency test; change both together |
 | Widget refresh and taps | iOS refreshes widgets every 15 to 30 minutes, and a tap opens Safari, not the Home Screen app | Platform limits for a web app |
 | No in-app review list for `unknown` rows | Unrecognized SMS sit in the list, dimmed | Add a review filter |
