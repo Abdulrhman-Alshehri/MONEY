@@ -111,6 +111,34 @@ dialog .chk{display:flex;gap:10px;align-items:center;font-size:17px;color:var(--
 #login .btn{width:100%}
 #tt{position:fixed;z-index:20;display:none;pointer-events:none;max-width:240px;padding:7px 10px;border-radius:10px;background:var(--fg);color:var(--page);font-size:15px}
 #tt b{display:block}
+.seg{display:flex;gap:4px;margin:0 0 14px;padding:4px;border-radius:12px;background:var(--card)}
+.seg button{flex:1;padding:7px 0;border-radius:9px;text-align:center;font-size:15px;color:var(--fg2)}
+.seg button[aria-pressed=true]{background:var(--seg);color:var(--fg);font-weight:600}
+.lim{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:10px;row-gap:6px;width:100%;padding:10px 0;border-top:1px solid var(--grid)}
+.lim:first-of-type{border-top:0}
+.lim .s{grid-column:1/-1;color:var(--fg2);font-size:15px}
+.lim .bar{grid-column:1/-1;height:8px;border-radius:4px;background:color-mix(in srgb,var(--acc) 18%,var(--card))}
+.lim .bar i{display:block;height:100%;min-width:3px;max-width:100%;border-radius:4px;background:var(--acc)}
+.lim.over .bar i{background:var(--bad)}.lim.over .a{color:var(--bad)}
+.lim.near .bar i{background:var(--warn)}
+.row .over{color:var(--bad)}
+.recap{display:block;position:relative;padding-right:40px}
+.recap .x{position:absolute;top:10px;right:8px;width:32px;height:32px;display:grid;place-items:center;color:var(--mut)}
+.recap b{font-weight:600}
+.offline{display:flex;gap:8px;align-items:center;margin:10px 0 0;padding:9px 12px;border-radius:12px;background:var(--card);font-size:15px;color:var(--fg2)}
+.offline .ico{color:var(--warn)}
+#hBal{cursor:pointer}
+dialog[open]:has(.big){display:flex;flex-direction:column;max-height:calc(100dvh - 24px)}
+dialog .big{flex:1 1 auto;min-height:72px;overflow-y:auto;margin:0 -4px;padding:0 4px}
+dialog h4{font-size:15px;font-weight:600;color:var(--fg2);margin:18px 0 2px}
+dialog .row{padding:7px 0}
+.limrow{display:grid;grid-template-columns:minmax(0,1fr) 110px;gap:4px 10px;align-items:center;margin:0;padding:9px 0;border-top:1px solid var(--grid);color:var(--fg);font-size:17px}
+.tx:disabled{cursor:default}
+.limrow:first-child{border-top:0}
+.limrow .s{color:var(--fg2);font-size:15px}
+.limrow input{width:100%;padding:9px 10px;border:1px solid var(--ring);border-radius:10px;background:var(--page);font-size:17px;text-align:right}
+.title-row{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.acts.wrap{flex-wrap:wrap}.acts.wrap .btn{flex:1 1 40%}
 </style>
 </head>
 <body>
@@ -129,6 +157,7 @@ dialog .chk{display:flex;gap:10px;align-items:center;font-size:17px;color:var(--
 </nav>
 
 <main id="app" hidden>
+  <div class="offline" id="offline" hidden></div>
   <section id="home">
     <div class="top">
       <h1 id="hMonth"></h1>
@@ -138,7 +167,9 @@ dialog .chk{display:flex;gap:10px;align-items:center;font-size:17px;color:var(--
     <div class="hero" id="hSpent"></div>
     <div class="delta" id="hDelta"></div>
     <div class="plan" id="hPlan" hidden></div>
+    <div class="plan" id="hBal" role="button" tabindex="0" hidden></div>
     <div class="warn" id="hWarn" hidden></div>
+    <div class="note recap" id="hRecap" hidden></div>
     <div class="legend" id="hLegend"></div>
     <div class="chart" id="hPace"></div>
     <div class="note" id="hNote" hidden></div>
@@ -160,19 +191,29 @@ dialog .chk{display:flex;gap:10px;align-items:center;font-size:17px;color:var(--
   <section id="months" hidden>
     <div class="top"><h1>Months</h1></div>
     <div id="mGoal"></div>
+    <div class="seg" id="mMode" role="group" aria-label="Months by"><button data-mode="cal">Calendar months</button><button data-mode="pay">Salary to salary</button></div>
     <div class="label" id="mUsual"></div>
     <div id="mBars"></div>
+    <h2>Monthly limits<button class="link" id="mLimEdit">Edit</button></h2>
+    <div id="mLimits"></div>
     <div id="mHabits"></div>
     <h2>Every month</h2>
     <div class="label" id="mFixedSum"></div>
     <div id="mFixed"></div>
     <div id="mBalW"><h2>Balance</h2><div class="label" id="mBalD"></div><div class="chart" id="mBal" style="margin-top:12px"></div></div>
+    <h2>Categories<button class="link" id="mCats">Manage</button></h2>
+    <div class="label">Rename, merge or delete categories everywhere.</div>
   </section>
 </main>
 
 <dialog id="dlg">
-  <h3 id="dM"></h3>
+  <div class="title-row"><h3 id="dM"></h3><button class="link" id="dRen">Rename</button></div>
   <div class="label" id="dS" style="margin-top:4px"></div>
+  <button class="link" id="dHist" style="margin-top:6px">History at this place</button>
+  <div id="dRenW" hidden>
+    <label>New name<input id="dRenIn" type="text" maxlength="80" autocomplete="off"></label>
+    <label class="chk" id="dRenAllW"><input id="dRenAll" type="checkbox"><span id="dRenAllT"></span></label>
+  </div>
   <label>Category<select id="dCat"></select></label>
   <div class="hint" id="dHint" hidden></div>
   <label id="dNewW" hidden>New category name<input id="dNew" type="text" maxlength="30"></label>
@@ -194,6 +235,37 @@ dialog .chk{display:flex;gap:10px;align-items:center;font-size:17px;color:var(--
   <div class="err" id="pErr"></div>
   <div class="acts"><button class="btn danger" id="pDel">Remove</button><button class="btn" id="pCancel">Cancel</button><button class="btn primary" id="pOk">Save</button></div>
 </dialog>
+<dialog id="sheet" aria-labelledby="shT">
+  <div class="big" id="shBody"></div>
+  <div class="acts wrap" id="shActs"></div>
+</dialog>
+<dialog id="limDlg">
+  <h3>Monthly limits</h3>
+  <div class="label" id="lInfo" style="margin-top:4px"></div>
+  <div class="big" id="lList" style="margin-top:10px"></div>
+  <div class="hint" id="lSum"></div>
+  <div class="err" id="lErr"></div>
+  <div class="acts wrap"><button class="btn" id="lSuggest">Use estimates</button><button class="btn" id="lCancel">Cancel</button><button class="btn primary" id="lOk">Save</button></div>
+</dialog>
+<dialog id="balDlg">
+  <h3>Balance now</h3>
+  <div class="label" style="margin-top:4px">Type what your bank app shows. Payments after now update it, and you can correct it any time. Kept only on this phone.</div>
+  <label>Balance in SAR<input id="bAmt" type="text" inputmode="decimal" autocomplete="off"></label>
+  <div class="err" id="bErr"></div>
+  <div class="acts"><button class="btn danger" id="bDel">Remove</button><button class="btn" id="bCancel">Cancel</button><button class="btn primary" id="bOk">Save</button></div>
+</dialog>
+<dialog id="catDlg">
+  <h3 id="cT">Categories</h3>
+  <div class="label" id="cInfo" style="margin-top:4px"></div>
+  <div class="big" id="cList" style="margin-top:8px"></div>
+  <div id="cEdit" hidden>
+    <label>New name, or an existing category to merge into<input id="cName" type="text" maxlength="40" autocomplete="off" list="cAll"></label>
+    <datalist id="cAll"></datalist>
+    <div class="hint" id="cHint"></div>
+  </div>
+  <div class="err" id="cErr"></div>
+  <div class="acts"><button class="btn danger" id="cDel" hidden>Delete</button><button class="btn" id="cCancel">Close</button><button class="btn primary" id="cOk" hidden>Save</button></div>
+</dialog>
 <div id="tt"></div>
 
 <script>
@@ -210,6 +282,13 @@ const ICONS = {
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>', warn: '<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17h.01"/>',
 };
 let data = [], tab = 'home', vy = 0, vm = 0, showAllCats = false, pFilter = null, shown = 60, cur = null, loadedAt = 0, fixedCache = null, dayCache = null, unusualCache = null;
+let limits = new Map(), offlineAt = 0, sheetActs = {}, catFrom = null;
+// This phone's storage. Reads fall back and writes report failure, since private browsing can refuse both.
+const store = {
+  get: (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } },
+  del: k => { try { localStorage.removeItem(k); } catch (e) {} },
+};
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money = n => Number(n).toLocaleString('en', {minimumFractionDigits: 2, maximumFractionDigits: 2});
@@ -265,25 +344,94 @@ function savedByMonth() {
   return m;
 }
 
+// The payments and limits. A copy stays on this phone, so the app still opens without internet.
+const DATA_CACHE = 'data-v1';
+async function cacheData(text) { try { await (await caches.open(DATA_CACHE)).put('./__payments', new Response(text)); store.set('dataAt', Date.now()); } catch (e) {} }
+async function cachedData() { try { const r = await (await caches.open(DATA_CACHE)).match('./__payments'); return r ? r.text() : null; } catch (e) { return null; } }
+function setData(list) {
+  data = list;
+  data.forEach(p => { p.amount = Number(p.amount || 0); p._d = local(p); });
+  outbox().forEach(applyOp); // changes not sent yet still show
+  changed();
+}
+const setLimits = list => { limits = new Map(list.map(x => [x.category, Number(x.monthly)])); };
 async function load() {
   if (!localStorage.getItem('tok')) return showLogin('');
+  await flush();
   try {
-    const r = await fetch(API, {headers: headers()});
+    const [r, rl] = await Promise.all([fetch(API, {headers: headers()}), fetch(`${API}?action=limits`, {headers: headers()}).catch(() => null)]);
     if (r.status === 401) { localStorage.removeItem('tok'); return showLogin('Wrong token'); }
     if (!r.ok) throw new Error(r.status);
-    data = await r.json();
-    data.forEach(p => { p.amount = Number(p.amount || 0); p._d = local(p); });
-    changed();
-    if (!loadedAt) { const t = today(); vy = t.getUTCFullYear(); vm = t.getUTCMonth(); }
-    loadedAt = Date.now();
-    $('login').hidden = true; $('app').hidden = false; $('tabs').hidden = false;
-    render();
-  } catch (e) { if (!loadedAt) showLogin('Could not reach the server'); }
+    const text = await r.text();
+    setData(JSON.parse(text)); cacheData(text);
+    if (rl && rl.ok) { const l = await rl.json(); setLimits(l); store.set('limits', l); }
+    else setLimits(store.get('limits', []));
+    offlineAt = 0;
+  } catch (e) {
+    if (!loadedAt) {
+      const text = await cachedData();
+      if (!text) return showLogin('Could not reach the server');
+      setData(JSON.parse(text)); setLimits(store.get('limits', []));
+    }
+    offlineAt = store.get('dataAt', Date.now());
+  }
+  if (!loadedAt) { const t = today(); vy = t.getUTCFullYear(); vm = t.getUTCMonth(); }
+  loadedAt = Date.now();
+  $('login').hidden = true; $('app').hidden = false; $('tabs').hidden = false;
+  render();
+}
+
+// ---------- changes made offline ----------
+// An edit that can't reach the server is kept on this phone, shown straight away, and sent when the connection is back.
+const outbox = () => store.get('outbox', []);
+const send = op => fetch(API + op.q, {method: op.method, headers: {...headers(), 'Content-Type': 'application/json'}, body: op.body ? JSON.stringify(op.body) : undefined});
+async function act(op) {
+  if (navigator.onLine !== false && !outbox().length) { // queued changes go first, to keep their order
+    try {
+      const r = await send(op);
+      if (r.ok) return {ok: true, json: await r.json().catch(() => ({}))};
+      if (r.status < 500) return {ok: false, status: r.status};
+    } catch (e) { /* no connection: keep it below */ }
+  }
+  if (!store.set('outbox', [...outbox(), op])) return {ok: false};
+  return {ok: true, queued: true};
+}
+async function flush() {
+  let list = outbox();
+  while (list.length) {
+    let r;
+    try { r = await send(list[0]); } catch (e) { return; } // still offline
+    if (r.status >= 500) return; // the server is having trouble: try later
+    list = list.slice(1); store.set('outbox', list); // sent, or refused for good (the payment was deleted, for example)
+  }
+}
+// The same change on the copy in this phone, so the screen matches what the server will have.
+function applyOp(op) {
+  const b = op.body || {};
+  if (op.kind === 'edit') {
+    const p = byId(op.id); if (!p) return;
+    if (b.apply_to_merchant) data.filter(x => sameMerchantAs(x, p)).forEach(x => { x.category = b.category; });
+    Object.assign(p, {category: b.category, note: b.note, excluded: b.excluded});
+  } else if (op.kind === 'delete') data = data.filter(x => String(x.id) !== op.id);
+  else if (op.kind === 'rename') {
+    const p = byId(String(b.id)); if (!p) return;
+    const k = nameKey(p.merchant);
+    (b.all && p.merchant ? data.filter(x => nameKey(x.merchant) === k) : [p]).forEach(x => { x.merchant = b.name; });
+  } else if (op.kind === 'category') {
+    data.forEach(x => { if (x.category === b.from) x.category = b.to; });
+    if (limits.has(b.from)) { if (b.to !== 'Uncategorized' && !limits.has(b.to)) limits.set(b.to, limits.get(b.from)); limits.delete(b.from); }
+  } else if (op.kind === 'limits') setLimits(b);
+}
+function showOffline() {
+  const n = outbox().length, at = offlineAt ? new Date(offlineAt + RIYADH) : null;
+  const msg = [at ? `Offline · your data from ${dayLabel(at)} ${hhmm(at)}` : '', n ? `${n} change${n === 1 ? '' : 's'} waiting to send` : ''].filter(Boolean).join(' · ');
+  $('offline').hidden = !msg; $('offline').innerHTML = icon('warn') + `<span>${esc(msg)}</span>`;
 }
 function showLogin(msg) { $('login').hidden = false; $('app').hidden = true; $('tabs').hidden = true; $('err').textContent = msg; }
 const changed = () => { fixedCache = null; dayCache = null; unusualCache = null; };
 
 function render() {
+  showOffline();
   for (const t of ['home', 'pay', 'months']) $(t).hidden = t !== tab;
   document.querySelectorAll('#tabs button').forEach(b => b.dataset.tab === tab ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current'));
   if (tab === 'home') renderHome(); else if (tab === 'pay') renderPay(); else renderMonths();
@@ -389,10 +537,12 @@ function renderHome() {
   }
 
   planLine(rows, isNow, upto);
+  balLine(isNow);
+  recapCard(isNow);
   $('hLegend').innerHTML = `<span><i style="background:var(--acc)"></i>${MONTHS[vm]}</span>` + (prevCum.length ? `<span><i style="background:var(--ctx)"></i>${MONTHS[pm]}</span>` : '');
   paceChart(curCum, prevCum, Math.max(daysIn(vy, vm), prevCum.length), pm);
 
-  const note = isNow ? saveReminder(rows) || reviewNote() || forecast(rows, upto) || subsNote() || unusualNote() || overUsual(rows, upto) || dueSoon(upto) : '';
+  const note = isNow ? saveReminder(rows) || reviewNote() || limitNote() || forecast(rows, upto) || subsNote() || unusualNote() || overUsual(rows, upto) || dueSoon(upto) : '';
   const nt = typeof note === 'string' ? {text: note} : note, hn = $('hNote');
   hn.hidden = !nt.text; hn.innerHTML = icon('info') + `<span>${esc(nt.text || '')}</span>` + (nt.go ? icon('next').replace('class="ico"', 'class="ico go"') : '');
   hn.dataset.go = nt.go || ''; hn.classList.toggle('tap', !!nt.go);
@@ -401,7 +551,7 @@ function renderHome() {
   const cats = totals(rows, p => p.category);
   const list = showAllCats || cats.length <= 5 ? cats : [...cats.slice(0, 4), {k: 'Other', v: cats.slice(4).reduce((s, e) => s + e.v, 0), more: cats.length - 4}];
   const max = Math.max(...list.map(e => e.v), 1);
-  $('hCats').innerHTML = list.map(e => `<button class="row" ${e.more ? 'data-other="1"' : `data-cat="${esc(e.k)}"`}><span class="m">${esc(e.k)}${e.more ? ` <span class="s">${e.more} more</span>` : ''}</span><span class="a">${whole(e.v)}</span>${icon(e.more ? 'down' : 'next')}<span class="t"><i style="width:${(e.v / max * 100).toFixed(1)}%"></i></span></button>`).join('') || '<p class="label">No spending yet</p>';
+  $('hCats').innerHTML = list.map(e => `<button class="row" ${e.more ? 'data-other="1"' : `data-cat="${esc(e.k)}"`}><span class="m">${esc(e.k)}${e.more ? ` <span class="s">${e.more} more</span>` : limits.has(e.k) ? ` <span class="s${e.v > limits.get(e.k) ? ' over' : ''}">of ${whole(limits.get(e.k))}</span>` : ''}</span><span class="a">${whole(e.v)}</span>${icon(e.more ? 'down' : 'next')}<span class="t"><i style="width:${(e.v / max * 100).toFixed(1)}%"></i></span></button>`).join('') || '<p class="label">No spending yet</p>';
 
   const pays = isNow ? data.filter(p => !p.excluded).sort((a, b) => b._d - a._d).slice(0, 5) : rows.filter(p => spend(p) > 0).sort((a, b) => b.amount - a.amount).slice(0, 5);
   $('hListT').textContent = isNow ? 'Latest' : 'Biggest';
@@ -430,7 +580,12 @@ function planLine(rows, isNow, upto) {
   if (el.hidden) return;
   const left = plan.income - plan.save - rows.reduce((s, p) => s + outflow(p), 0), days = daysIn(vy, vm) - upto + 1;
   el.className = 'plan' + (left < 0 ? ' bad' : '');
-  el.innerHTML = left < 0 ? `<b>${whole(-left)} over plan</b>` : isNow ? `<b>${whole(left)}</b> left · ${whole(left / days)} a day for ${days} day${days === 1 ? '' : 's'}` : `<b>${whole(left)}</b> under plan`;
+  // Bills that usually come later this month (or up to 3 days late) are held back from the daily figure
+  const due = isNow ? fixedCosts().filter(f => !f.paid && f.day > upto - 3).reduce((s, f) => s + f.p.amount, 0) : 0, free = left - due;
+  el.innerHTML = left < 0 ? `<b>${whole(-left)} over plan</b>` : !isNow ? `<b>${whole(left)}</b> under plan`
+    : !due ? `<b>${whole(left)}</b> left · ${whole(left / days)} a day for ${days} day${days === 1 ? '' : 's'}`
+    : free > 0 ? `<b>${whole(left)}</b> left · <b>${whole(free / days)} a day</b> after ${whole(due)} of bills still due`
+    : `<b>${whole(left)}</b> left, but bills still due this month come to ${whole(due)}`;
 }
 // Once the salary is in, a nudge until this month's saving has been moved.
 function saveReminder(rows) {
@@ -605,10 +760,12 @@ function renderPay() {
   if (reviewing) return renderReview(r);
   const q = $('q').value.trim().toLowerCase();
   let rows = data;
-  if (pFilter) rows = rows.filter(p => inMonth(p, pFilter.y, pFilter.m) && (!pFilter.cat || p.category === pFilter.cat));
+  if (pFilter && pFilter.from != null) rows = rows.filter(p => dayNum(p._d) >= pFilter.from && dayNum(p._d) <= pFilter.to);
+  else if (pFilter) rows = rows.filter(p => inMonth(p, pFilter.y, pFilter.m) && (!pFilter.cat || p.category === pFilter.cat));
   if (q) rows = rows.filter(p => `${p.merchant || ''} ${p.category} ${p.note || ''} ${p.amount.toFixed(2)}`.toLowerCase().includes(q));
   rows = rows.slice().sort((a, b) => b._d - a._d);
-  $('pChip').innerHTML = pFilter ? `<button class="chip" id="pClear" aria-label="Clear filter">${esc((pFilter.cat ? pFilter.cat + ' · ' : '') + monthName(pFilter.y, pFilter.m))}${icon('x')}</button>` : '';
+  const chip = !pFilter ? '' : pFilter.from != null ? spanLabel(pFilter.from, pFilter.to) : (pFilter.cat ? pFilter.cat + ' · ' : '') + monthName(pFilter.y, pFilter.m);
+  $('pChip').innerHTML = pFilter ? `<button class="chip" id="pClear" aria-label="Clear filter">${esc(chip)}${icon('x')}</button>` : '';
   const total = rows.reduce((s, p) => s + spend(p), 0);
   $('pSum').textContent = pFilter || q ? `${rows.length} payment${rows.length === 1 ? '' : 's'} · ${whole(total)} SAR spent` : '';
   let html = '', lastDay = null;
@@ -663,6 +820,15 @@ function goalCard() {
 
 function renderMonths() {
   goalCard();
+  renderLimits();
+  const mode = store.get('monthsMode', 'cal');
+  $('mMode').querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === mode)));
+  if (mode === 'pay') renderPayday(); else renderCalendar();
+  renderFixed();
+  renderHabits();
+  balChart();
+}
+function renderCalendar() {
   const t = today(), now = monthIdx(t), sums = new Map();
   data.forEach(p => { const v = spend(p); if (v) sums.set(monthIdx(p._d), (sums.get(monthIdx(p._d)) || 0) + v); });
   const list = [];
@@ -674,7 +840,8 @@ function renderMonths() {
     const y = Math.floor(e.m / 12), mo = e.m % 12, tag = e.m === now ? 'so far' : e.part ? 'partial' : '';
     return `<button class="row" data-m="${e.m}"><span class="m">${monthName(y, mo)}${tag ? ` <span class="s">${tag}</span>` : ''}</span><span class="a">${whole(e.v)}</span>${icon('next')}<span class="t"><i${e.m === now ? ' class="soft"' : ''} style="width:${(e.v / max * 100).toFixed(1)}%"></i></span></button>`;
   }).join('');
-
+}
+function renderFixed() {
   const fixed = fixedCosts();
   const changes = subsChanges(), subs = fixed.filter(f => f.p.category === 'Subscriptions');
   $('mFixedSum').textContent = fixed.length ? `About ${whole(fixed.reduce((s, f) => s + f.p.amount, 0))} SAR a month` + (subs.length ? ` · subscriptions ${whole(subs.reduce((s, f) => s + f.p.amount, 0) * 12)} a year` : '') : 'Nothing repeats every month yet';
@@ -682,8 +849,6 @@ function renderMonths() {
     const c = changes.find(x => !x.isNew && x.was === f.p.amount && nameKey(x.p.merchant) === nameKey(f.p.merchant));
     return `<button class="tx" data-q="${esc(f.p.merchant)}"><span class="m">${esc(label(f.p))}</span><span class="a">${amt(c ? c.p.amount : f.p.amount)}</span><span class="s">Around the ${ordinal(f.day)}${c ? ` · was ${amt(f.p.amount)}` : ''}</span></button>`;
   }).join('');
-  renderHabits();
-  balChart();
 }
 
 function balChart() {
@@ -725,11 +890,16 @@ const hideTip = () => { $('tt').style.display = 'none'; };
 
 // ---------- edit sheet ----------
 function opts(el, list) { el.innerHTML = list.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join(''); }
-function edit(p) {
+function edit(p, rename = false) {
   if (!p) return;
   cur = p;
   const inc = INCOMING.includes(p.kind), out = p.kind === 'transfer_out';
   $('dM').textContent = p.merchant || 'Unknown';
+  const same = p.merchant ? data.filter(x => nameKey(x.merchant) === nameKey(p.merchant)).length : 1;
+  $('dRenW').hidden = !rename; $('dRen').hidden = rename; $('dRenIn').value = p.merchant || '';
+  $('dRenAllW').hidden = same < 2; $('dRenAll').checked = same > 1;
+  $('dRenAllT').textContent = `Rename all ${same} payments with this name, and future ones`;
+  $('dHist').hidden = !p.merchant;
   $('dS').textContent = `${inc ? '+' : ''}${money(p.amount)} SAR · ${DAY(p._d.getUTCDay())} ${shortDate(p._d)} ${p._d.getUTCFullYear()}, ${hhmm(p._d)}${p.city ? ' · ' + cityName(p.city) : ''}`;
   opts($('dCat'), [...allCats().map(c => [c, c]), ['__new', 'New category...']]);
   $('dCat').value = p.category; $('dNewW').hidden = true; $('dNew').value = '';
@@ -741,6 +911,7 @@ function edit(p) {
   hint();
   hideTip();
   $('dlg').showModal();
+  if (rename) $('dRenIn').focus();
 }
 function hint() {
   const c = $('dCat').value, t = !(cur && cur.kind === 'transfer_out') ? '' : c === 'Transfers' ? "Transfers don't count as spending. Pick a category, like Rent & Housing, to count it, or Savings for money you put aside." : c === 'Savings' ? 'Savings never count as spending. They count toward your savings goal.' : '';
@@ -749,34 +920,277 @@ function hint() {
 $('dCat').onchange = () => { $('dNewW').hidden = $('dCat').value !== '__new'; hint(); };
 $('dCancel').onclick = () => $('dlg').close();
 const closeOutside = d => d.addEventListener('click', e => { const r = d.getBoundingClientRect(); if (e.target === d && (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom)) d.close(); });
-closeOutside($('dlg')); closeOutside($('planDlg'));
+['dlg', 'planDlg', 'sheet', 'limDlg', 'balDlg', 'catDlg'].forEach(id => closeOutside($(id)));
 $('dSave').onclick = async () => {
   const category = $('dCat').value === '__new' ? $('dNew').value.trim() : $('dCat').value;
   if (!category) { $('dErr').textContent = 'Type a category name'; return; }
-  const all = $('dAll').checked && !$('dAllW').hidden;
-  const body = {category, note: $('dNote').value.trim() || null, excluded: $('dEx').checked, apply_to_merchant: all};
+  const name = $('dRenIn').value.trim().replace(/\s+/g, ' ');
+  if (!$('dRenW').hidden && !name) { $('dErr').textContent = 'Type a name'; return; }
+  const all = $('dAll').checked && !$('dAllW').hidden, id = String(cur.id), ops = [];
+  if (!$('dRenW').hidden && name !== (cur.merchant || '')) ops.push({kind: 'rename', method: 'POST', q: '?action=rename', body: {id, name, all: $('dRenAll').checked && !$('dRenAllW').hidden}});
+  ops.push({kind: 'edit', id, method: 'PATCH', q: `?id=${encodeURIComponent(id)}`, body: {category, note: $('dNote').value.trim() || null, excluded: $('dEx').checked, apply_to_merchant: all}});
   $('dSave').disabled = true;
-  const r = await fetch(`${API}?id=${encodeURIComponent(cur.id)}`, {method: 'PATCH', headers: {...headers(), 'Content-Type': 'application/json'}, body: JSON.stringify(body)}).catch(() => null);
+  for (const op of ops) {
+    const r = await act(op);
+    if (!r.ok) { $('dSave').disabled = false; $('dErr').textContent = 'Could not save. Check your connection.'; return; }
+    applyOp(op);
+  }
   $('dSave').disabled = false;
-  if (!r || !r.ok) { $('dErr').textContent = 'Could not save. Check your connection.'; return; }
-  if (all) data.filter(x => sameMerchantAs(x, cur)).forEach(x => { x.category = category; });
-  Object.assign(cur, {category, note: body.note, excluded: body.excluded});
   changed(); $('dlg').close(); render();
 };
 $('dDel').onclick = async () => {
   if (!confirm('Delete this payment for good?')) return;
-  const r = await fetch(`${API}?id=${encodeURIComponent(cur.id)}`, {method: 'DELETE', headers: headers()}).catch(() => null);
-  if (!r || !r.ok) { $('dErr').textContent = 'Could not delete. Check your connection.'; return; }
-  data = data.filter(x => x !== cur);
+  const op = {kind: 'delete', id: String(cur.id), method: 'DELETE', q: `?id=${encodeURIComponent(cur.id)}`};
+  const r = await act(op);
+  if (!r.ok) { $('dErr').textContent = 'Could not delete. Check your connection.'; return; }
+  applyOp(op);
   changed(); $('dlg').close(); render();
 };
+$('dRen').onclick = () => { $('dRenW').hidden = false; $('dRen').hidden = true; $('dRenIn').focus(); $('dRenIn').select(); };
+$('dHist').onclick = () => { const m = cur.merchant; $('dlg').close(); openMerchant(m); };
+
+// ---------- monthly limits ----------
+const monthSpend = (cat, m = monthIdx(today())) => data.reduce((s, p) => s + (p.category === cat && monthIdx(p._d) === m ? spend(p) : 0), 0);
+// Mostly fixed costs this month (rent, bills): reaching the limit is expected, so only going over it is news.
+function mostlyFixed(cat) {
+  const now = monthIdx(today()), keys = new Set(fixedCosts().map(f => fixedKey(f.p)));
+  let all = 0, fixed = 0;
+  data.forEach(p => { if (p.category === cat && monthIdx(p._d) === now) { const v = spend(p); all += v; if (keys.has(fixedKey(p))) fixed += v; } });
+  return all > 0 && fixed >= all * 0.9;
+}
+// An estimate per category: the median of its last 6 complete months, rounded up to 50 (or to 100 from 1,000).
+// Categories spent in fewer than 3 of those months get none, and Uncategorized never does.
+function estimates() {
+  const now = monthIdx(today()), months = [];
+  for (let m = now - 1; m >= firstMonth() && months.length < 6; m--) if (!partial(m)) months.push(m);
+  const by = new Map();
+  data.forEach(p => {
+    const v = spend(p), m = monthIdx(p._d);
+    if (!v || !months.includes(m)) return;
+    const e = by.get(p.category) || by.set(p.category, new Map()).get(p.category);
+    e.set(m, (e.get(m) || 0) + v);
+  });
+  const list = [];
+  by.forEach((e, cat) => {
+    const vals = months.map(m => Math.max(0, e.get(m) || 0)).sort((a, b) => a - b), h = vals.length / 2;
+    if (cat === 'Uncategorized' || vals.filter(v => v > 0).length < Math.min(3, months.length)) return;
+    const usual = vals.length % 2 ? vals[Math.floor(h)] : (vals[h - 1] + vals[h]) / 2, step = usual >= 1000 ? 100 : 50;
+    if (usual > 0) list.push({cat, usual, est: Math.ceil(usual / step) * step});
+  });
+  return {months: months.length, list: list.sort((a, b) => b.usual - a.usual)};
+}
+function renderLimits() {
+  const box = $('mLimits'), t = today(), left = daysIn(t.getUTCFullYear(), t.getUTCMonth()) - t.getUTCDate() + 1;
+  $('mLimEdit').hidden = !limits.size;
+  if (!limits.size) { box.innerHTML = '<button class="goal setup" id="mLimSet"><b>Set monthly limits</b><span class="label">Estimated for each category from your last 6 complete months. Change any of them.</span></button>'; return; }
+  box.innerHTML = [...limits].map(([cat, lim]) => ({cat, lim, v: monthSpend(cat)})).sort((a, b) => b.v / b.lim - a.v / a.lim).map(e => {
+    const pct = e.v / e.lim, fixed = pct <= 1 && mostlyFixed(e.cat), cls = pct > 1 ? ' over' : pct >= 0.8 && !fixed ? ' near' : '';
+    const sub = pct > 1 ? `Over by ${whole(e.v - e.lim)}` : fixed && pct >= 0.8 ? 'Fixed costs, paid for this month' : `${whole(e.lim - e.v)} left · ${left} day${left === 1 ? '' : 's'} to go`;
+    return `<button class="lim${cls}" data-cat="${esc(e.cat)}"><span class="m">${esc(e.cat)}</span><span class="a">${whole(e.v)} of ${whole(e.lim)}</span><span class="bar" role="img" aria-label="${Math.round(pct * 100)}% of the limit"><i style="width:${Math.min(100, pct * 100).toFixed(1)}%"></i></span><span class="s">${sub}</span></button>`;
+  }).join('');
+}
+// The Home heads-up for the category closest to (80% or more) or over its limit.
+function limitNote() {
+  if (!limits.size) return '';
+  const t = today(), left = daysIn(t.getUTCFullYear(), t.getUTCMonth()) - t.getUTCDate() + 1;
+  const e = [...limits].map(([cat, lim]) => ({cat, lim, v: monthSpend(cat)})).filter(x => x.v > x.lim || (x.v >= x.lim * 0.8 && !mostlyFixed(x.cat))).sort((a, b) => b.v / b.lim - a.v / a.lim)[0];
+  return !e ? '' : e.v > e.lim ? `${e.cat} is over its limit: ${whole(e.v)} of ${whole(e.lim)}.` : `${e.cat}: ${whole(e.v)} of ${whole(e.lim)}, with ${left} day${left === 1 ? '' : 's'} to go.`;
+}
+function openLimits(focus) {
+  const est = estimates(), byCat = new Map(est.list.map(e => [e.cat, e])), now = monthIdx(today());
+  const recent = new Set(data.filter(p => spend(p) > 0 && monthIdx(p._d) >= now - 6 && p.category !== 'Uncategorized').map(p => p.category));
+  const cats = [...new Set([...est.list.map(e => e.cat), ...limits.keys(), ...recent])];
+  $('lInfo').textContent = est.months ? `Estimates come from your last ${est.months} complete months. Leave a box empty for no limit.` : 'There are no complete months for estimates yet.';
+  $('lList').innerHTML = cats.map(c => {
+    const e = byCat.get(c), v = limits.has(c) ? String(Math.round(limits.get(c))) : '';
+    return `<label class="limrow"><span><span class="m">${esc(c)}</span><br><span class="s">${e ? `Usual ${whole(e.usual)} · estimate ${whole(e.est)}` : 'Not enough months for an estimate'}</span></span><input type="text" inputmode="decimal" autocomplete="off" data-cat="${esc(c)}" data-est="${e ? e.est : ''}" value="${v}" aria-label="Limit for ${esc(c)}"></label>`;
+  }).join('') || '<p class="label">No spending categories yet.</p>';
+  $('lErr').textContent = ''; limitSum();
+  $('limDlg').showModal();
+  const f = focus && [...$('lList').querySelectorAll('input')].find(i => i.dataset.cat === focus);
+  if (f) f.focus();
+}
+function limitSum() {
+  const total = [...$('lList').querySelectorAll('input')].reduce((s, i) => s + (num(i.value) > 0 ? num(i.value) : 0), 0), plan = getPlan();
+  $('lSum').textContent = total ? `Limits add up to ${whole(total)} a month` + (plan ? ` · your plan leaves ${whole(plan.income - plan.save)} for everything, rent and bills included` : '') : '';
+}
+
+// ---------- category and merchant pages ----------
+function sheet(html, acts) {
+  $('shBody').innerHTML = html;
+  $('shActs').innerHTML = acts.map(([k, text, primary]) => `<button class="btn${primary ? ' primary' : ''}" data-act="${k}">${esc(text)}</button>`).join('') + '<button class="btn" data-act="close">Close</button>';
+  hideTip();
+  if (!$('sheet').open) $('sheet').showModal();
+  $('shBody').scrollTop = 0;
+}
+// Thin bars for a few months, the current one lighter, like Months.
+const barRows = (list, max) => list.map(e => `<div class="row"><span class="m">${esc(e.label)}${e.tag ? ` <span class="s">${esc(e.tag)}</span>` : ''}</span><span class="a">${whole(e.v)}</span><span></span><span class="t"><i${e.soft ? ' class="soft"' : ''} style="width:${(Math.max(0, e.v) / max * 100).toFixed(1)}%"></i></span></div>`).join('');
+const mLabel = m => monthName(Math.floor(m / 12), m % 12);
+function openCategory(cat, month = monthIdx(today())) {
+  const now = monthIdx(today()), by = new Map(), shops = new Map();
+  data.forEach(p => {
+    if (p.category !== cat) return;
+    const v = spend(p), m = monthIdx(p._d);
+    if (!v) return;
+    by.set(m, (by.get(m) || 0) + v);
+    if (m >= now - 2) { const k = nameKey(p.merchant) || '?', e = shops.get(k) || {name: p.merchant || 'Unknown', v: 0, n: 0}; e.v += v; e.n++; shops.set(k, e); }
+  });
+  const months = [];
+  for (let m = now; m >= firstMonth() && months.length < 9; m--) months.push(m);
+  const full = months.filter(m => m < now && !partial(m)), avg = full.length ? full.reduce((s, m) => s + (by.get(m) || 0), 0) / full.length : null;
+  const v = by.get(now) || 0, lim = limits.get(cat);
+  let h = `<h3 id="shT">${esc(cat)}</h3><div class="label" style="margin-top:4px">This month ${whole(v)}${lim ? ` of ${whole(lim)}` : ''}${avg != null ? ` · usual ${whole(avg)} a month` : ''}</div>`;
+  if (lim) { const pct = v / lim; h += `<div class="lim${pct > 1 ? ' over' : pct >= 0.8 ? ' near' : ''}" style="border:0;padding:10px 0 0"><span class="bar" role="img" aria-label="${Math.round(pct * 100)}% of the limit"><i style="width:${Math.min(100, pct * 100).toFixed(1)}%"></i></span></div>`; }
+  const rows = months.map(m => ({label: mLabel(m), v: by.get(m) || 0, tag: m === now ? 'so far' : partial(m) ? 'partial' : '', soft: m === now}));
+  h += `<h4>Last ${months.length} month${months.length === 1 ? '' : 's'}</h4>` + barRows(rows, Math.max(1, ...rows.map(r => r.v)));
+  const top = [...shops.values()].sort((a, b) => b.v - a.v).slice(0, 5);
+  if (top.length) h += '<h4>Top places · last 3 months</h4>' + top.map(e => `<button class="tx" data-merchant="${esc(e.name)}"><span class="m">${esc(e.name)}</span><span class="a">${whole(e.v)}</span><span class="s">${e.n} payment${e.n === 1 ? '' : 's'}</span></button>`).join('');
+  sheetActs = {
+    pay: () => { $('sheet').close(); openPayments({cat, y: Math.floor(month / 12), m: month % 12}); },
+    lim: () => { $('sheet').close(); openLimits(cat); },
+    ren: () => { $('sheet').close(); openCats(cat); },
+  };
+  const acts = [['pay', 'Payments', true], ['lim', lim ? 'Edit limit' : 'Set a limit']];
+  if (!BUILT_IN.includes(cat)) acts.push(['ren', 'Rename']);
+  sheet(h, acts);
+}
+function openMerchant(name) {
+  const k = nameKey(name), rows = data.filter(p => nameKey(p.merchant) === k).sort((a, b) => b._d - a._d);
+  if (!rows.length) return;
+  const now = monthIdx(today()), paid = rows.filter(p => spend(p) > 0), total = rows.reduce((s, p) => s + spend(p), 0), by = new Map(), visits = new Map();
+  rows.forEach(p => { const v = spend(p), m = monthIdx(p._d); if (v) by.set(m, (by.get(m) || 0) + v); if (v > 0) visits.set(m, (visits.get(m) || 0) + 1); });
+  const months = [];
+  for (let m = now; m > now - 6 && m >= firstMonth(); m--) months.push(m);
+  const past = months.filter(m => m < now), perMonth = past.length ? past.reduce((s, m) => s + (visits.get(m) || 0), 0) / past.length : 0;
+  const first = rows[rows.length - 1]._d;
+  let h = `<h3 id="shT">${esc(rows[0].merchant || name)}</h3><div class="label" style="margin-top:4px">${whole(total)} SAR in all · ${paid.length} payment${paid.length === 1 ? '' : 's'} since ${shortDate(first)}${first.getUTCFullYear() !== today().getUTCFullYear() ? ' ' + first.getUTCFullYear() : ''}</div>`;
+  if (paid.length) h += `<div class="label">Usually ${amt(paid.map(p => p.amount).sort((a, b) => a - b)[Math.floor(paid.length / 2)])} a time · about ${perMonth >= 1 ? whole(perMonth) : perMonth.toFixed(1)} times a month</div>`;
+  const mrows = months.map(m => ({label: mLabel(m), v: by.get(m) || 0, tag: visits.get(m) ? `${visits.get(m)}×` : '', soft: m === now}));
+  h += `<h4>Last ${months.length} month${months.length === 1 ? '' : 's'}</h4>` + barRows(mrows, Math.max(1, ...mrows.map(r => r.v))) + '<h4>Latest</h4>' + rows.slice(0, 5).map(txRow).join('');
+  sheetActs = {pay: () => { $('sheet').close(); openPayments(null, rows[0].merchant || name); }, ren: () => { $('sheet').close(); edit(rows[0], true); }};
+  sheet(h, [['pay', 'All payments', true], ['ren', 'Rename']]);
+}
+
+// ---------- salary-to-salary months ----------
+// Each period starts on the day a salary arrived: an income of at least half the plan's salary (1,000 without a plan),
+// within 6 days of the plan's salary day. A month without one starts on the salary day itself.
+function payPeriods() {
+  const plan = getPlan(), day = plan ? plan.day || 27 : 27, min = plan ? plan.income / 2 : 1000;
+  const pays = data.filter(p => p.kind === 'income' && !p.excluded && p.amount >= min).map(p => dayNum(p._d)), td = dayNum(today()), starts = [];
+  for (let m = firstMonth() - 1; m <= monthIdx(today()); m++) {
+    const y = Math.floor(m / 12), mo = m % 12, anchor = dayNum(new Date(Date.UTC(y, mo, Math.min(day, daysIn(y, mo)))));
+    const near = pays.filter(n => Math.abs(n - anchor) <= 6).sort((a, b) => Math.abs(a - anchor) - Math.abs(b - anchor))[0];
+    starts.push(near ?? anchor);
+  }
+  const out = [];
+  for (let i = 0; i < starts.length && starts[i] <= td; i++) {
+    const end = i + 1 < starts.length ? starts[i + 1] - 1 : td + 40;
+    out.push({start: starts[i], end, now: end >= td});
+  }
+  return out.reverse();
+}
+const spanLabel = (a, b) => `${shortDate(fromDayNum(a))} – ${shortDate(fromDayNum(b))}`;
+function renderPayday() {
+  const td = dayNum(today()), per = new Map();
+  data.forEach(p => { const v = spend(p); if (v) per.set(dayNum(p._d), (per.get(dayNum(p._d)) || 0) + v); });
+  const list = payPeriods().slice(0, 12).map(e => {
+    let v = 0;
+    for (let n = e.start; n <= Math.min(e.end, td); n++) v += per.get(n) || 0;
+    return {...e, v, part: !e.now && incomplete(e.start, e.end)};
+  });
+  const full = list.filter(e => !e.now && !e.part).slice(0, 3), max = Math.max(...list.map(e => e.v), 1);
+  $('mUsual').textContent = full.length ? `Usual salary month: ${whole(full.reduce((s, e) => s + e.v, 0) / full.length)} SAR` : '';
+  $('mBars').innerHTML = list.map(e => `<button class="row" data-from="${e.start}" data-to="${Math.min(e.end, td)}"><span class="m">${e.now ? `${shortDate(fromDayNum(e.start))} – now` : spanLabel(e.start, e.end)}${e.now ? ' <span class="s">so far</span>' : e.part ? ' <span class="s">partial</span>' : ''}</span><span class="a">${whole(e.v)}</span>${icon('next')}<span class="t"><i${e.now ? ' class="soft"' : ''} style="width:${(e.v / max * 100).toFixed(1)}%"></i></span></button>`).join('');
+}
+
+// ---------- live balance ----------
+// You type what the bank app shows; every payment after that moves it. Kept on this phone, like the plan.
+const getBal = () => { const b = store.get('balance', null); return b && Number.isFinite(b.amount) && Number.isFinite(b.at) ? b : null; };
+const MONEY_IN = ['refund', 'income', 'cash_in', 'transfer_in'];
+function balanceNow() {
+  const b = getBal();
+  if (!b) return null;
+  let v = b.amount, n = 0;
+  data.forEach(p => {
+    if (p.excluded || p.kind === 'unknown' || new Date(p.occurred_at || p.created_at).getTime() <= b.at) return;
+    v += MONEY_IN.includes(p.kind) ? p.amount : -p.amount; n++;
+  });
+  return {v, n, at: b.at};
+}
+function balLine(isNow) {
+  const el = $('hBal'), b = isNow ? balanceNow() : null;
+  el.hidden = !isNow;
+  if (!isNow) return;
+  if (!b) { el.innerHTML = '<span class="link">Add your balance</span>'; return; }
+  const d = dayLabel(new Date(b.at + RIYADH)), when = d === 'Today' || d === 'Yesterday' ? d.toLowerCase() : d;
+  el.innerHTML = `Balance about <b>${whole(b.v)}</b> · set ${when}${b.n ? `, ${b.n} payment${b.n === 1 ? '' : 's'} since` : ''}`;
+}
+function openBal() { const b = balanceNow(); $('bAmt').value = b ? b.v.toFixed(2) : ''; $('bErr').textContent = ''; $('bDel').hidden = !b; $('balDlg').showModal(); }
+
+// ---------- monthly recap ----------
+// In the first 5 days of a month, last month in one card: total against usual, the biggest changes and new places.
+function recapCard(isNow) {
+  const t = today(), m = monthIdx(t) - 1, el = $('hRecap');
+  const show = isNow && t.getUTCDate() <= 5 && m >= firstMonth() && store.get('recapSeen', null) !== m;
+  el.hidden = !show;
+  if (!show) return;
+  const sumOf = x => data.reduce((s, p) => s + (monthIdx(p._d) === x ? spend(p) : 0), 0);
+  const byCat = x => { const r = new Map(); data.forEach(p => { if (monthIdx(p._d) === x) { const v = spend(p); if (v) r.set(p.category, (r.get(p.category) || 0) + v); } }); return r; };
+  const total = sumOf(m), prev = [1, 2, 3].map(k => m - k).filter(x => x >= firstMonth() && !partial(x));
+  let h = `<b>${MONTHS[m % 12]}: ${whole(total)} SAR</b>`;
+  if (partial(m)) h += ' · some days have no data, so there\'s no comparison.';
+  else if (prev.length) {
+    const usual = prev.reduce((s, x) => s + sumOf(x), 0) / prev.length, d = total - usual;
+    h += Math.abs(d) < Math.max(100, usual * 0.05) ? ' · about your usual.' : ` · ${whole(Math.abs(d))} ${d > 0 ? 'more' : 'less'} than usual.`;
+    const curC = byCat(m), avg = new Map();
+    prev.forEach(x => byCat(x).forEach((v, c) => avg.set(c, (avg.get(c) || 0) + v / prev.length)));
+    const ch = [...new Set([...curC.keys(), ...avg.keys()])].map(c => ({c, d: (curC.get(c) || 0) - (avg.get(c) || 0)})).filter(e => Math.abs(e.d) >= 100 && e.c !== 'Uncategorized').sort((a, b) => Math.abs(b.d) - Math.abs(a.d)).slice(0, 3);
+    if (ch.length) h += ' ' + ch.map(e => `${esc(e.c)} ${e.d > 0 ? '+' : '−'}${whole(Math.abs(e.d))}`).join(', ') + '.';
+  }
+  const before = new Set(data.filter(p => monthIdx(p._d) < m).map(p => nameKey(p.merchant)));
+  const fresh = [...new Set(data.filter(p => monthIdx(p._d) === m && spend(p) > 0 && p.merchant && !before.has(nameKey(p.merchant))).map(p => p.merchant))];
+  if (fresh.length) h += ` New: ${fresh.slice(0, 3).map(esc).join(', ')}${fresh.length > 3 ? ` and ${fresh.length - 3} more` : ''}.`;
+  el.innerHTML = `${h}<button class="x" id="hRecapX" aria-label="Dismiss the recap">${icon('x')}</button>`;
+}
+
+// ---------- category manager ----------
+const BUILT_IN = ['Transfers', 'Savings', 'Income', 'Cash deposit', 'Uncategorized']; // the app's rules depend on these names
+function openCats(focus) {
+  const counts = new Map();
+  data.forEach(p => counts.set(p.category, (counts.get(p.category) || 0) + 1));
+  limits.forEach((v, c) => { if (!counts.has(c)) counts.set(c, 0); });
+  $('cT').textContent = 'Categories'; $('cInfo').textContent = 'Tap one to rename it, merge it into another, or delete it.';
+  $('cList').hidden = false; $('cEdit').hidden = true; $('cDel').hidden = true; $('cOk').hidden = true; $('cErr').textContent = '';
+  $('cList').innerHTML = [...counts].sort((a, b) => b[1] - a[1]).map(([c, n]) => `<button class="tx" data-cat="${esc(c)}"${BUILT_IN.includes(c) ? ' disabled' : ''}><span class="m">${esc(c)}</span><span class="a">${n}</span>${BUILT_IN.includes(c) ? '<span class="s">Built in, can\'t be changed</span>' : ''}</button>`).join('');
+  if (!$('catDlg').open) $('catDlg').showModal();
+  if (focus && !BUILT_IN.includes(focus)) editCat(focus);
+}
+function editCat(c) {
+  catFrom = c;
+  const n = data.filter(p => p.category === c).length;
+  $('cT').textContent = c; $('cList').hidden = true; $('cEdit').hidden = false; $('cOk').hidden = false; $('cDel').hidden = false; $('cErr').textContent = '';
+  $('cInfo').textContent = `${n} payment${n === 1 ? '' : 's'}${limits.has(c) ? ` · limit ${whole(limits.get(c))}` : ''}`;
+  $('cName').value = ''; $('cHint').textContent = '';
+  $('cAll').innerHTML = allCats().filter(x => x !== c && !['Transfers', 'Income', 'Cash deposit'].includes(x)).map(x => `<option value="${esc(x)}">`).join('');
+  $('cName').focus();
+}
+async function catAction(to) {
+  if (!to || to === catFrom) { $('cErr').textContent = 'Type a new name, or pick a category to merge into'; return; }
+  const op = {kind: 'category', method: 'POST', q: '?action=category', body: {from: catFrom, to}};
+  $('cOk').disabled = true;
+  const r = await act(op);
+  $('cOk').disabled = false;
+  if (!r.ok) { $('cErr').textContent = 'Could not save. Check your connection.'; return; }
+  applyOp(op); store.set('limits', [...limits].map(([category, monthly]) => ({category, monthly})));
+  changed(); $('catDlg').close(); render();
+}
 
 // ---------- wiring ----------
 $('hPrev').innerHTML = icon('prev'); $('hNext').innerHTML = icon('next');
 const moveMonth = k => { const m = vy * 12 + vm + k; vy = Math.floor(m / 12); vm = m % 12; showAllCats = false; renderHome(); };
 $('hPrev').onclick = () => moveMonth(-1);
 $('hNext').onclick = () => moveMonth(1);
-$('hCats').onclick = e => { const b = e.target.closest('button'); if (!b) return; if (b.dataset.other) { showAllCats = true; renderHome(); } else openPayments({cat: b.dataset.cat, y: vy, m: vm}); };
+$('hCats').onclick = e => { const b = e.target.closest('button'); if (!b) return; if (b.dataset.other) { showAllCats = true; renderHome(); } else openCategory(b.dataset.cat, vy * 12 + vm); };
 $('hList').onclick = e => { const b = e.target.closest('button'); if (b) edit(byId(b.dataset.id)); };
 $('hAll').onclick = () => openPayments({y: vy, m: vm});
 $('pList').onclick = e => {
@@ -788,12 +1202,54 @@ $('pReview').onclick = () => openReview();
 $('pExport').onclick = () => exportCsv();
 $('hNote').onclick = () => { if ($('hNote').dataset.go === 'review') openReview(); };
 $('hNote').onkeydown = e => { if ((e.key === 'Enter' || e.key === ' ') && $('hNote').dataset.go === 'review') { e.preventDefault(); openReview(); } };
-$('mHabits').onclick = e => { const b = e.target.closest('button'); if (b) openPayments(null, b.dataset.q); };
+$('mHabits').onclick = e => { const b = e.target.closest('button'); if (b) openMerchant(b.dataset.q); };
 $('pChip').onclick = e => { if (e.target.closest('button')) { pFilter = null; shown = 60; renderPay(); } };
 $('pMore').onclick = () => { shown += 60; renderPay(); };
 $('q').oninput = () => { if (pFilter && pFilter.review) pFilter = null; shown = 60; renderPay(); };
-$('mBars').onclick = e => { const b = e.target.closest('button'); if (!b) return; const m = +b.dataset.m; vy = Math.floor(m / 12); vm = m % 12; showAllCats = false; tab = 'home'; render(); scrollTo(0, 0); };
-$('mFixed').onclick = e => { const b = e.target.closest('button'); if (b) openPayments(null, b.dataset.q); };
+$('mBars').onclick = e => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.from) return openPayments({from: +b.dataset.from, to: +b.dataset.to});
+  const m = +b.dataset.m; vy = Math.floor(m / 12); vm = m % 12; showAllCats = false; tab = 'home'; render(); scrollTo(0, 0);
+};
+$('mFixed').onclick = e => { const b = e.target.closest('button'); if (b) openMerchant(b.dataset.q); };
+$('mMode').onclick = e => { const b = e.target.closest('button'); if (b) { store.set('monthsMode', b.dataset.mode); renderMonths(); } };
+$('mLimits').onclick = e => { if (e.target.closest('#mLimSet')) return openLimits(); const b = e.target.closest('[data-cat]'); if (b) openCategory(b.dataset.cat); };
+$('mLimEdit').onclick = () => openLimits();
+$('mCats').onclick = () => openCats();
+$('hBal').onclick = () => openBal();
+$('hBal').onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openBal(); } };
+$('hRecap').onclick = e => { if (e.target.closest('#hRecapX')) { store.set('recapSeen', monthIdx(today()) - 1); $('hRecap').hidden = true; } };
+$('shActs').onclick = e => { const b = e.target.closest('button'); if (!b) return; if (b.dataset.act === 'close') $('sheet').close(); else if (sheetActs[b.dataset.act]) sheetActs[b.dataset.act](); };
+$('shBody').onclick = e => {
+  const m = e.target.closest('[data-merchant]'); if (m) return openMerchant(m.dataset.merchant);
+  const t = e.target.closest('[data-id]'); if (t) { $('sheet').close(); edit(byId(t.dataset.id)); }
+};
+$('lList').oninput = limitSum;
+$('lSuggest').onclick = () => { $('lList').querySelectorAll('input').forEach(i => { if (i.dataset.est) i.value = i.dataset.est; }); limitSum(); };
+$('lCancel').onclick = () => $('limDlg').close();
+$('lOk').onclick = async () => {
+  const list = [...$('lList').querySelectorAll('input')].filter(i => i.value.trim()).map(i => ({category: i.dataset.cat, monthly: num(i.value)}));
+  if (list.some(l => !(l.monthly > 0))) { $('lErr').textContent = 'Limits must be numbers above 0, or empty'; return; }
+  $('lOk').disabled = true;
+  const op = {kind: 'limits', method: 'PUT', q: '?action=limits', body: list}, r = await act(op);
+  $('lOk').disabled = false;
+  if (!r.ok) { $('lErr').textContent = 'Could not save. Check your connection.'; return; }
+  applyOp(op); store.set('limits', list); $('limDlg').close(); render();
+};
+$('bOk').onclick = () => {
+  const v = num($('bAmt').value);
+  if (!Number.isFinite(v)) { $('bErr').textContent = 'Type the balance, for example 3,240.50'; return; }
+  if (!store.set('balance', {amount: v, at: Date.now()})) { $('bErr').textContent = 'Could not save on this phone'; return; }
+  $('balDlg').close(); render();
+};
+$('bDel').onclick = () => { store.del('balance'); $('balDlg').close(); render(); };
+$('bCancel').onclick = () => $('balDlg').close();
+$('cList').onclick = e => { const b = e.target.closest('button'); if (b && !b.disabled) editCat(b.dataset.cat); };
+$('cName').oninput = () => { const v = $('cName').value.trim(); $('cHint').textContent = v && v !== catFrom && allCats().includes(v) ? `Merges into ${v}: these payments, rules and any limit move there.` : ''; };
+$('cOk').onclick = () => catAction($('cName').value.trim());
+$('cDel').onclick = () => { if (confirm(`Delete "${catFrom}"? Its payments move to Uncategorized.`)) catAction('Uncategorized'); };
+$('cCancel').onclick = () => $('catDlg').close();
+addEventListener('online', () => { if (loadedAt) load(); });
 $('mGoal').onclick = e => { if (e.target.closest('#mPlan')) openPlan(); };
 
 // ---------- savings plan sheet ----------
@@ -821,7 +1277,7 @@ $('tok').onkeydown = e => { if (e.key === 'Enter') $('go').click(); };
 addEventListener('resize', () => { if (!$('app').hidden) render(); });
 addEventListener('scroll', hideTip, {passive: true});
 // The Home Screen app is often resumed, not reopened: fetch new payments when it comes back.
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && loadedAt && Date.now() - loadedAt > 60e3 && !$('dlg').open) load(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && loadedAt && Date.now() - loadedAt > 60e3 && !document.querySelector('dialog[open]')) load(); });
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js');
 load();
 </script>

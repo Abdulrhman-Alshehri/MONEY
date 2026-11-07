@@ -60,7 +60,7 @@ Why it's built this way:
 
 ## Using the dashboard
 
-Three tabs: **Home**, **Payments** and **Months**. Months are calendar months in Riyadh time, and "today" is the real date.
+Three tabs: **Home**, **Payments** and **Months**. Months are calendar months in Riyadh time (Months can also show salary to salary), and "today" is the real date. Without internet the app opens with the copy on this phone, says so at the top, and keeps your edits until it can send them.
 
 ### Home
 
@@ -71,14 +71,16 @@ Three tabs: **Home**, **Payments** and **Months**. Months are calendar months in
 | Comparison | Against the month before, up to the same day: ▲ more, ▼ less, or "about the same" when the difference is under 100 SAR or 5%. **Hidden when either month is missing days**, because missing SMS would look like saving. That includes a few empty days at the start of a month when they end a longer gap |
 | Warning | Missing days next to the total, or "Last payment was …" when nothing has arrived for 3 days |
 | Chart | This month's running total (blue) against last month's (grey) |
-| Left this month | With a savings plan: what's left after saving, spending and money sent to people, and how much that is a day. A past month shows how it ended against the plan |
-| Heads-up | At most one, current month only, in this order: "Salary is in, move X to savings"; a possible duplicate or unrecognised SMS from the last 7 days (tap it to open Review); a warning when spending at this pace leaves less than your monthly saving; a subscription that changed price or is new; an unusually big payment from the last 3 days; a category far above its usual pace; fixed costs due in the next 7 days |
-| Where it went | Top 4 categories plus Other. Tap one to see its payments |
+| Left this month | With a savings plan: what's left after saving, spending and money sent to people, and how much that is a day once bills that usually come later this month are held back. A past month shows how it ended against the plan |
+| Balance | Tap "Add your balance" and type what your bank app shows. It then moves with every payment after that ("Balance about 3,240"). Tap it to correct it any time. It's kept only on this phone |
+| Recap | In the first 5 days of a month, last month in one card: the total against usual, the biggest category changes and new places. Tap × to dismiss it |
+| Heads-up | At most one, current month only, in this order: "Salary is in, move X to savings"; a possible duplicate or unrecognised SMS from the last 7 days (tap it to open Review); a category at 80% of its limit or over it (a category of fixed costs, such as rent, only when it goes over); a warning when spending at this pace leaves less than your monthly saving; a subscription that changed price or is new; an unusually big payment from the last 3 days; a category far above its usual pace; fixed costs due in the next 7 days |
+| Where it went | Top 4 categories plus Other, with their limit if set ("of 1,500"). Tap one for its page: this month against the limit and usual, the last 9 months, and the top places, with buttons for its payments, its limit and renaming it |
 | Latest or Biggest | The last 5 payments for the current month, or the 5 biggest for a past month. Tap one to edit it |
 
 ### Payments
 
-Every payment, newest first, grouped by day. Search matches the merchant, category, note or amount. Opened from a category or "See all", it's filtered to that month; tap the chip to clear it. Tap a payment to edit it. A payment far above your normal at that place says "usually X here".
+Every payment, newest first, grouped by day. Search matches the merchant, category, note or amount. Opened from a category, a salary month or "See all", it's filtered to that period; tap the chip to clear it. Tap a payment to edit it. A payment far above your normal at that place says "usually X here".
 
 - **Review** (top right, when there's something to check): possible duplicates (same place and amount from SMS within 2 minutes; delete one, or tap "Both are real"), SMS that weren't recognised, and Uncategorized payments.
 - **Export**: every payment as a CSV file, through the share sheet, for Excel or Numbers.
@@ -88,16 +90,21 @@ Every payment, newest first, grouped by day. Search matches the merchant, catego
 | Part | What it shows |
 |---|---|
 | Savings goal | With a savings plan: saved so far against the goal, and whether that's on track. If you're behind, how much a month still reaches the goal on time. Tap Edit to change the plan |
-| Usual month | Average of the last 3 complete months |
-| Bars | Spending per month for the last 12 months. "so far" is the current month; "partial" means days are missing. Tap one to open it on Home |
+| Calendar months / Salary to salary | How the bars below are cut. Salary to salary starts each period on the day your salary arrived (near your plan's salary day, the 27th without a plan). The choice is remembered |
+| Usual month | Average of the last 3 complete months (or salary months) |
+| Bars | Spending per month for the last 12 months. "so far" is the current one; "partial" means days are missing. Tap a calendar month to open it on Home, or a salary month to list its payments |
+| Monthly limits | Each limit with this month's spending, amber from 80% and red when over. Set them from estimates: the median of your last 6 complete months, rounded up. Change any, or leave a box empty for no limit. Limits are saved in your database, so the SMS notification can say "640 of 1,500" |
 | Habits | No-spend days this month (rent and bills don't count), Fri–Sat against other days over the last 8 weeks, and small payments you make often with their yearly cost |
 | Every month | Fixed costs: the same merchant and amount about once a month, on about the same day, and what subscriptions cost a year. A changed price shows "was X". Food, groceries, transport, shopping and fuel are never treated as fixed costs |
 | Balance | From bank statements only, so it ends at the latest statement. After 35 days it asks for a newer one |
+| Categories | Manage: rename a category, merge it into another (type an existing name), or delete it (its payments move to Uncategorized). It changes past payments, rules and limits. Transfers, Savings, Income, Cash deposit and Uncategorized are built in and can't be changed |
 
 ### Editing a payment
 
 Tap a payment to:
 
+- **Rename the place** with Rename next to its name: this payment only, or every payment with that name and future ones (the bank's "SAMPLE LAUNDRY CO" can become "Laundry"). Its category rule follows the new name.
+- **See its history** with "History at this place": the total, how often, the usual amount and the last 6 months.
 - **Change its category**, or choose "New category..." to create one.
 - **Apply it to all of them** with "Use for all...": every payment from that merchant, or every transfer with that person, whatever the capitals or spacing ("JAHEZ " and "Jahez" count as one). Money received from them keeps its own category. This changes past payments and saves a rule for new SMS and for statement imports.
 - **Add a note.**

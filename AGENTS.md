@@ -359,18 +359,26 @@ Everything is in `index.html`.
 | `habits()`, `smallLeaks()`, `renderHabits()` | No-spend days, Fri–Sat against other days (only days with data, fixed costs left out), small frequent purchases |
 | `exportCsv()` | CSV of all payments through the share sheet, with a download fallback. Cells starting with `= + - @` are quoted so spreadsheets don't run them |
 | `sameMerchantAs()` | The "Use for all" match, the same as `sameMerchant()` in `index.ts` |
-| `edit()` and the `dSave`, `dDel` handlers | Edit sheet and API calls |
+| `edit()` and the `dSave`, `dDel` handlers | Edit sheet, including Rename (`?action=rename`) and "History at this place" |
+| `estimates()`, `renderLimits()`, `openLimits()`, `limitNote()`, `mostlyFixed()` | Monthly limits. Estimates are the median of the last 6 complete months, rounded up to 50 (100 from 1,000), for categories spent in at least 3 of them, never Uncategorized. Amber from 80%, red over. A category that is mostly fixed costs this month (rent) only warns when over |
+| `sheet()`, `openCategory()`, `openMerchant()` | The category page (this month against limit and usual, last 9 months, top places) and the merchant page (total, usual amount, visits, last 6 months, latest) |
+| `payPeriods()`, `renderPayday()` | Salary-to-salary periods on Months: each starts on an income of at least half the plan's salary (1,000 without a plan) within 6 days of the plan's salary day, else on that day |
+| `balanceNow()`, `balLine()`, `openBal()` | The live balance: what the user typed (`localStorage` `balance` = `{amount, at}`), plus money in and minus money out for every payment after `at`, leaving out excluded and unrecognised rows |
+| `recapCard()` | Last month's recap on Home in the first 5 days; dismissing it stores the month in `recapSeen` |
+| `openCats()`, `editCat()`, `catAction()` | The category manager (`?action=category`). `BUILT_IN` categories can't be changed, because the rules depend on their names |
+| `act()`, `flush()`, `applyOp()`, `outbox()` | Offline. Each load keeps a copy of the payments in Cache Storage (`data-v1`), used when the server can't be reached. Edits go through `act()`: on no connection or a 5xx they're queued in `localStorage` `outbox`, applied to the copy at once, and sent in order before the next load or on the `online` event. Queued changes are applied again on top of a cached copy |
 
 ### Conventions
 
 - Every total and chart uses `spend()`, so numbers always agree. `Savings` transfers are never spending; they feed the savings goal.
 - `counts()` in `index.ts` repeats `spend()` for the summary endpoint, and its `gaps()` repeats the dashboard's gap rules. Change both together.
 - Fixed costs skip `EVERYDAY` categories (food, groceries, transport, shopping, fuel), so a coffee at the same price a month apart isn't a bill.
-- **Personal numbers stay on the phone.** The savings plan (salary, monthly saving, goal) lives in `localStorage` under `plan`. Never put it in code, tests, docs or the database: the repo is public.
+- **Personal numbers stay on the phone.** The savings plan (salary, monthly saving, goal) lives in `localStorage` under `plan`, and the typed balance under `balance`. Never put them in code, tests, docs or the database: the repo is public. Category limits are the exception, by the user's choice: they live in `category_limits` so the SMS notice and push alerts can use them.
+- Other `localStorage` keys: `tok`, `dupOk`, `monthsMode`, `recapSeen`, `limits` (a copy for offline use), `outbox`, `dataAt`.
 - Calendar months in Riyadh time. "Today" is the real date, not the latest payment.
 - Each number needs something to compare with: Home compares with last month up to the same day. Differences under 100 SAR or 5% read "about the same", and there's no ▲/▼ verdict when either month is missing days.
 - Missing days are shown next to the total they affect (project rule).
-- Keep Home short: one heads-up at most, top 4 categories, 5 payments. Other detail belongs in Payments or Months.
+- Keep Home short: one heads-up at most, top 4 categories, 5 payments, plus the balance line and, early in a month, the recap. Other detail belongs in Payments, Months or the category and merchant pages.
 - Netlify's free plan pins a "Powered by Netlify" badge, about 200×64px, over the bottom-right corner, and it can't be hidden on that plan. Keep navigation and buttons out of that corner: that's why the tabs are at the top, and pages end with bottom padding so the last row can scroll clear of it.
 - Text: 17px base and nothing under 13px. Whole riyals in lists, exact amounts in the edit sheet.
 - Escape all data with `esc()` before `innerHTML`, or use `textContent`. Merchant names come from SMS and are untrusted.
@@ -419,19 +427,17 @@ Invoke-RestMethod -Method Post -Uri $env:SMS_URL -Headers @{"x-api-key"=$env:APP
 | Generic statement merchant names | Labels such as `Online: Food` cover several shops, so renaming one for all renames them all | Rename those payments one at a time |
 | Spending and gap rules exist twice | `spend()` and the gap rules in the dashboard, and `counts()` and `gaps()` in the summary (widget, Siri, notice), must stay identical | Keep the consistency test; change both together |
 | Widget refresh and taps | iOS refreshes widgets every 15 to 30 minutes, and a tap opens Safari, not the Home Screen app | Platform limits for a web app |
-| No in-app review list for `unknown` rows | Unrecognized SMS sit in the list, dimmed | Add a review filter |
 | Fixed costs need an identical amount | A bill that changes each month isn't listed under Every month or "Due this week" | Group by merchant with a tolerance |
 | Rent across a month boundary | Paid on the 31st instead of the 1st, one month has two rents and the comparison jumps | Compare without fixed costs |
 | Savings withdrawals matched by name | Money sent back from savings is only subtracted when the SMS shows the account name the same way in both directions | Let the user mark the savings account explicitly |
-| Savings plan is per phone | A new phone or a cleared app starts without the plan | Store it server-side if more than one device is used |
+| Savings plan and balance are per phone | A new phone or a cleared app starts without them | Store them server-side if more than one device is used |
+| Live balance is an estimate | It drifts when an SMS never arrives, or for money that moves without one | Correct it in the app; a statement import fills missed SMS |
 | Statement and SMS amounts assume SAR | Foreign amounts rely on the bank's conversion | Fine unless SMS formats differ |
 
 ## Ideas not built yet
 
-- Monthly budgets per category
 - Statement upload in the dashboard
 - Alert when the balance is low or a subscription changes
-- Salary-to-salary view, since balance follows the pay cycle
 - Arabic interface
 
 ## Checklist before finishing a change
