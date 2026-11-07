@@ -9,3 +9,5 @@ page1_*
 .env
 .env.*
 __pycache__/
+# Netlify CLI state (the linked site id), written by deploys from this folder
+.netlify/
