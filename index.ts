@@ -227,16 +227,6 @@ function notice(p: any, category: string, s: any) {
 
 // ---------- keys ----------
 const sha256hex = async (s: string) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)))].map((b) => b.toString(16).padStart(2, '0')).join('');
-// What a request may do: everything with APP_TOKEN, or the scope of a key in api_keys (kept as a SHA-256 hash only).
-async function scopeOf(req: Request) {
-  const given = norm(req.headers.get('x-api-key') ?? ''), app = norm(Deno.env.get('APP_TOKEN') ?? '');
-  if (!given) return null;
-  if (app && given === app) return 'full';
-  const { data } = await db.from('api_keys').select('id,scope').eq('hash', await sha256hex(given)).is('revoked_at', null).maybeSingle();
-  if (!data) return null;
-  await db.from('api_keys').update({ last_used_at: new Date().toISOString() }).eq('id', data.id);
-  return data.scope as string;
-}
 
 // ---------- push notifications: RFC 8291 encryption and RFC 8292 VAPID, with WebCrypto only ----------
 const enc = new TextEncoder();
@@ -312,6 +302,190 @@ async function push(msg: Msg) {
     } catch (e) { errors.push((e as Error).message); } // one device failing doesn't stop the others
   }
   return { sent, errors };
+}
+
+// ---------- who is calling: the old token, device keys, Face ID sessions, and a lockout ----------
+const ORIGIN = Deno.env.get('APP_ORIGIN') || SITE; // the app's origin; tests set a localhost one
+const RP_ID = new URL(ORIGIN).hostname;
+const sha = async (b: Uint8Array) => new Uint8Array(await crypto.subtle.digest('SHA-256', b));
+const same = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]);
+const ipOf = (req: Request) => (req.headers.get('cf-connecting-ip') ?? req.headers.get('x-real-ip') ?? '').trim(); // set by Cloudflare
+let legacyCache: { off: boolean; last_used?: string | null; at: number } | null = null;
+// Whether the old token (APP_TOKEN) is turned off, read at most every 30 seconds
+async function legacy() {
+  if (legacyCache && Date.now() - legacyCache.at < 30e3) return legacyCache;
+  const { data } = await db.from('app_settings').select('value').eq('key', 'legacy_token').maybeSingle();
+  return (legacyCache = { off: !!data?.value?.off, last_used: data?.value?.last_used ?? null, at: Date.now() });
+}
+async function isLocked(ip: string) {
+  if (!ip) return false;
+  const { data } = await db.from('auth_failures').select('locked_until').eq('ip', ip).maybeSingle();
+  return !!data?.locked_until && Date.parse(data.locked_until) > Date.now();
+}
+// 10 wrong keys or failed unlocks from one address within 10 minutes lock it for 15 minutes
+async function noteFailure(ip: string) {
+  if (!ip) return;
+  const now = Date.now(), { data } = await db.from('auth_failures').select('fails,first_at,locked_until').eq('ip', ip).maybeSingle();
+  const fresh = !data || now - Date.parse(data.first_at) > 10 * 60e3, fails = fresh ? 1 : data.fails + 1;
+  const stillLocked = data?.locked_until && Date.parse(data.locked_until) > now ? data.locked_until : null;
+  await db.from('auth_failures').upsert({ ip, fails, first_at: fresh ? new Date(now).toISOString() : data.first_at, locked_until: fails >= 10 ? new Date(now + 15 * 60e3).toISOString() : stillLocked });
+}
+// Full access with the old token, a device key's one job, or a Face ID session. While an address is locked out, the old
+// token is refused even when it's right, so it can't be guessed; device keys and sessions still work, since they are
+// 256-bit random and can't be guessed anyway. That keeps the Shortcut saving SMS through a lockout.
+async function auth(req: Request): Promise<{ scope: string; session?: string } | { status: number }> {
+  const given = norm(req.headers.get('x-api-key') ?? ''), app = norm(Deno.env.get('APP_TOKEN') ?? ''), ip = ipOf(req);
+  if (!given) return { status: 401 };
+  if (app && given === app) {
+    const l = await legacy();
+    if (!l.off) {
+      if (await isLocked(ip)) return { status: 429 };
+      if (!l.last_used || Date.now() - Date.parse(l.last_used) > 10 * 60e3) { // its last use, for the app, every 10 minutes at most
+        l.last_used = new Date().toISOString();
+        await db.from('app_settings').upsert({ key: 'legacy_token', value: { off: false, last_used: l.last_used }, updated_at: l.last_used });
+      }
+      return { scope: 'full' };
+    }
+  } else {
+    const { data } = await db.from('api_keys').select('id,scope,expires_at').eq('hash', await sha256hex(given)).is('revoked_at', null).maybeSingle();
+    if (data && (!data.expires_at || Date.parse(data.expires_at) > Date.now())) {
+      await db.from('api_keys').update({ last_used_at: new Date().toISOString() }).eq('id', data.id);
+      return { scope: data.scope, session: data.expires_at ? data.id : undefined };
+    }
+  }
+  await noteFailure(ip);
+  return { status: (await isLocked(ip)) ? 429 : 401 };
+}
+const SESSION_HOURS = 12;
+async function newSession() {
+  const token = b64u(crypto.getRandomValues(new Uint8Array(32))), expires_at = new Date(Date.now() + SESSION_HOURS * 3600e3).toISOString();
+  await db.from('api_keys').delete().lt('expires_at', new Date(Date.now() - DAY).toISOString()); // sessions that ended a day ago
+  const { error } = await db.from('api_keys').insert({ name: 'Face ID session', scope: 'full', hash: await sha256hex(token), expires_at });
+  if (error) throw new Error(error.message);
+  return { token, expires_at };
+}
+
+// ---------- Face ID: WebAuthn passkeys (ES256), checked here with WebCrypto ----------
+// A minimal CBOR reader: enough for the attestation object and its COSE key
+function cbor(buf: Uint8Array, at = 0): { value: unknown; end: number } {
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  let i = at;
+  const len = (ai: number) => {
+    if (ai < 24) return ai;
+    if (ai === 24) return buf[i++];
+    if (ai === 25) { i += 2; return dv.getUint16(i - 2); }
+    if (ai === 26) { i += 4; return dv.getUint32(i - 4); }
+    throw new Error('cbor: unsupported length');
+  };
+  const item = (): unknown => {
+    if (i >= buf.length) throw new Error('cbor: truncated');
+    const b = buf[i++], mt = b >> 5, ai = b & 31;
+    if (mt === 7) { if (ai >= 20 && ai <= 23) return [false, true, null, undefined][ai - 20]; throw new Error('cbor: unsupported value'); }
+    const n = len(ai);
+    if (mt === 0) return n;
+    if (mt === 1) return -1 - n;
+    if (mt === 2 || mt === 3) { if (i + n > buf.length) throw new Error('cbor: truncated'); const v = buf.slice(i, i + n); i += n; return mt === 2 ? v : new TextDecoder().decode(v); }
+    if (mt === 4) { const a = []; for (let k = 0; k < n; k++) a.push(item()); return a; }
+    if (mt === 5) { const m = new Map(); for (let k = 0; k < n; k++) { const key = item(); m.set(key, item()); } return m; }
+    return item(); // a tag: its value is what counts
+  };
+  const value = item();
+  return { value, end: i };
+}
+// Authenticator data: site hash, flags (1 user present, 4 user verified by Face ID, 64 a new credential follows), counter
+function authData(a: Uint8Array) {
+  if (a.length < 37) throw new Error('authenticator data too short');
+  const dv = new DataView(a.buffer, a.byteOffset, a.byteLength), flags = a[32];
+  const out: { rpIdHash: Uint8Array; flags: number; count: number; credId?: Uint8Array; cose?: Map<number, unknown> } = { rpIdHash: a.slice(0, 32), flags, count: dv.getUint32(33) };
+  if (flags & 64) {
+    const n = dv.getUint16(53);
+    out.credId = a.slice(55, 55 + n);
+    out.cose = cbor(a, 55 + n).value as Map<number, unknown>;
+  }
+  return out;
+}
+const coseToJwk = (m: Map<number, unknown>) => {
+  const x = m.get(-2), y = m.get(-3);
+  if (m.get(1) !== 2 || m.get(3) !== -7 || m.get(-1) !== 1 || !(x instanceof Uint8Array) || !(y instanceof Uint8Array) || x.length !== 32 || y.length !== 32) throw new Error('only P-256 passkeys are supported');
+  return { kty: 'EC', crv: 'P-256', x: b64u(x), y: b64u(y) };
+};
+// WebAuthn signs in DER; WebCrypto wants the two 32-byte numbers side by side
+function derToRaw(der: Uint8Array) {
+  let i = 0;
+  const head = (tag: number) => {
+    if (der[i++] !== tag) throw new Error('bad signature');
+    let n = der[i++];
+    if (n & 0x80) { let k = n & 0x7f; n = 0; while (k-- > 0) n = n * 256 + der[i++]; }
+    return n;
+  };
+  const int = () => {
+    const n = head(2);
+    let v = der.slice(i, i + n);
+    i += n;
+    while (v.length > 32 && v[0] === 0) v = v.slice(1);
+    if (v.length > 32) throw new Error('bad signature');
+    const o = new Uint8Array(32); o.set(v, 32 - v.length); return o;
+  };
+  head(0x30);
+  return cat(int(), int());
+}
+async function challenge(kind: 'register' | 'login', ip: string) {
+  await db.from('auth_challenges').delete().lt('created_at', new Date(Date.now() - 3600e3).toISOString());
+  if (ip) { // at most 10 waiting from one address
+    const { count } = await db.from('auth_challenges').select('challenge', { count: 'exact', head: true }).eq('ip', ip).gte('created_at', new Date(Date.now() - 5 * 60e3).toISOString());
+    if ((count ?? 0) >= 10) return null;
+  }
+  const c = b64u(crypto.getRandomValues(new Uint8Array(32)));
+  const { error } = await db.from('auth_challenges').insert({ challenge: c, kind, ip: ip || null });
+  if (error) throw new Error(error.message);
+  return c;
+}
+// The browser's client data: a challenge we issued, used once within 5 minutes (any attempt uses it up), the right
+// ceremony and this site
+async function clientData(raw: Uint8Array, type: string, kind: 'register' | 'login') {
+  let c;
+  try { c = JSON.parse(new TextDecoder().decode(raw)); } catch { throw new Error('bad client data'); }
+  const { data } = await db.from('auth_challenges').delete().eq('challenge', String(c?.challenge ?? '')).eq('kind', kind).select('created_at');
+  if (!data?.length || Date.now() - Date.parse(data[0].created_at) > 5 * 60e3) throw new Error('expired or unknown challenge');
+  if (c.type !== type || c.origin !== ORIGIN || c.crossOrigin === true) throw new Error('wrong site or ceremony');
+  return sha(raw);
+}
+async function webauthnUser() {
+  const { data } = await db.from('app_settings').select('value').eq('key', 'webauthn_user').maybeSingle();
+  if (data?.value?.id) return data.value.id as string;
+  const id = b64u(crypto.getRandomValues(new Uint8Array(16)));
+  await db.from('app_settings').upsert({ key: 'webauthn_user', value: { id } });
+  return id;
+}
+async function passkeyOptions(req: Request) {
+  const ip = ipOf(req);
+  if (await isLocked(ip)) return json({ error: 'locked' }, 429);
+  const { data } = await db.from('passkeys').select('id');
+  if (!data?.length) return json({ error: 'no passkey' }, 404);
+  const c = await challenge('login', ip);
+  if (!c) return json({ error: 'locked' }, 429);
+  return json({ challenge: c, rpId: RP_ID, timeout: 60000, userVerification: 'required', allowCredentials: data.map((p) => ({ type: 'public-key', id: p.id })) });
+}
+async function passkeyLogin(req: Request) {
+  const ip = ipOf(req);
+  if (await isLocked(ip)) return json({ error: 'locked' }, 429);
+  try {
+    const b = await req.json();
+    const { data: pk } = await db.from('passkeys').select('id,public_key,sign_count').eq('id', String(b?.id ?? '')).maybeSingle();
+    if (!pk) throw new Error('unknown passkey');
+    const cd = unb64u(String(b.response?.clientDataJSON ?? '')), ad = unb64u(String(b.response?.authenticatorData ?? '')), sig = unb64u(String(b.response?.signature ?? ''));
+    const cdHash = await clientData(cd, 'webauthn.get', 'login'), a = authData(ad);
+    if (!same(a.rpIdHash, await sha(enc.encode(RP_ID)))) throw new Error('wrong site');
+    if (!(a.flags & 1) || !(a.flags & 4)) throw new Error('Face ID was not used');
+    if ((a.count || num(pk.sign_count)) && a.count <= num(pk.sign_count)) throw new Error('this passkey looks copied'); // Apple's stay at 0
+    const key = await crypto.subtle.importKey('jwk', pk.public_key, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+    if (!(await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, derToRaw(sig), cat(ad, cdHash)))) throw new Error('signature does not match');
+    await db.from('passkeys').update({ sign_count: a.count, last_used_at: new Date().toISOString() }).eq('id', pk.id);
+    return json({ ok: true, ...(await newSession()) });
+  } catch (e) {
+    await noteFailure(ip);
+    return json({ error: (e as Error).message }, 401);
+  }
 }
 
 // ---------- scheduled jobs: pg_cron calls ?action=tick at 7 minutes past every hour ----------
@@ -538,17 +712,99 @@ async function tick(force: string | null) {
 
 async function handle(req: Request): Promise<Response> {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
-  const scope = await scopeOf(req);
-  if (!scope) return json({ error: 'unauthorized' }, 401);
   const url = new URL(req.url);
   const action = url.searchParams.get('action');
   const id = url.searchParams.get('id');
+  // Unlocking with Face ID needs no key: the passkey is the proof
+  if (req.method === 'POST' && action === 'passkey-options') return passkeyOptions(req);
+  if (req.method === 'POST' && action === 'passkey-login') return passkeyLogin(req);
+  const who = await auth(req);
+  if ('status' in who) return json({ error: who.status === 429 ? 'locked' : 'unauthorized' }, who.status);
+  const scope = who.scope;
 
   // The scheduler's key can only run the scheduled jobs. With the full key, ?force=<job> runs one now and sends nothing.
   if (req.method === 'POST' && action === 'tick' && (scope === 'cron' || scope === 'full')) {
     return json({ ok: true, ...(await tick(scope === 'full' ? url.searchParams.get('force') : null)) });
   }
-  if (scope !== 'full') return json({ error: 'forbidden' }, 403);
+  // A device key does one job: the Shortcut's adds SMS, the widget's reads the summary
+  const allowed = scope === 'full' || (scope === 'ingest' && req.method === 'POST' && !action) || (scope === 'read' && req.method === 'GET' && action === 'summary');
+  if (!allowed) return json({ error: 'forbidden' }, 403);
+
+  // Face ID: set up a passkey on this phone (with full access), list them, remove one
+  if (req.method === 'POST' && action === 'passkey-register-options') {
+    const [c, have, user] = await Promise.all([challenge('register', ''), db.from('passkeys').select('id'), webauthnUser()]);
+    return json({
+      challenge: c, rp: { id: RP_ID, name: 'Spending' }, user: { id: user, name: 'Spending', displayName: 'Spending' },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }], timeout: 60000, attestation: 'none',
+      authenticatorSelection: { authenticatorAttachment: 'platform', residentKey: 'preferred', userVerification: 'required' },
+      excludeCredentials: (have.data ?? []).map((p) => ({ type: 'public-key', id: p.id })),
+    });
+  }
+  if (req.method === 'POST' && action === 'passkey-register') {
+    try {
+      const b = await req.json();
+      const cd = unb64u(String(b?.response?.clientDataJSON ?? '')), att = cbor(unb64u(String(b?.response?.attestationObject ?? ''))).value as Map<string, unknown>;
+      await clientData(cd, 'webauthn.create', 'register');
+      const raw = att instanceof Map ? att.get('authData') : null;
+      if (!(raw instanceof Uint8Array)) throw new Error('no authenticator data');
+      const a = authData(raw);
+      if (!same(a.rpIdHash, await sha(enc.encode(RP_ID)))) throw new Error('wrong site');
+      if (!(a.flags & 1) || !(a.flags & 4)) throw new Error('Face ID was not used');
+      if (!a.credId || !a.cose) throw new Error('no passkey in the reply');
+      const jwk = coseToJwk(a.cose), credId = b64u(a.credId);
+      await crypto.subtle.importKey('jwk', jwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']); // a real P-256 point
+      const name = typeof b.name === 'string' && b.name.trim() ? b.name.trim().slice(0, 40) : 'iPhone';
+      const { error } = await db.from('passkeys').insert({ id: credId, public_key: jwk, sign_count: a.count, name });
+      if (error) throw new Error(error.message);
+      return json({ ok: true, id: credId, jwk, session: await newSession() });
+    } catch (e) { return json({ error: (e as Error).message }, 400); }
+  }
+  if (req.method === 'GET' && action === 'passkeys') {
+    const { data, error } = await db.from('passkeys').select('id,name,created_at,last_used_at').order('created_at');
+    return error ? json({ error: error.message }, 500) : json(data);
+  }
+  if (req.method === 'POST' && action === 'passkey-delete') {
+    const b = await req.json();
+    const { error } = await db.from('passkeys').delete().eq('id', String(b?.id ?? ''));
+    return error ? json({ error: error.message }, 500) : json({ ok: true });
+  }
+  // Device keys: each shown once when made and stored only as a hash; the old token's switch; locking ends a session
+  if (req.method === 'GET' && action === 'keys') {
+    legacyCache = null;
+    const [k, l] = await Promise.all([db.from('api_keys').select('id,name,scope,created_at,last_used_at').is('revoked_at', null).is('expires_at', null).order('created_at'), legacy()]);
+    return k.error ? json({ error: k.error.message }, 500) : json({ keys: k.data ?? [], legacy: { off: l.off, last_used: l.last_used ?? null } });
+  }
+  if (req.method === 'POST' && action === 'keys') {
+    const b = await req.json();
+    const kind = ['ingest', 'read', 'full'].includes(b?.scope) ? b.scope as string : '', name = typeof b?.name === 'string' ? b.name.trim().slice(0, 40) : '';
+    if (!kind || !name) return json({ error: 'expected {name, scope: ingest | read | full}' }, 400);
+    const key = `${{ ingest: 'sms', read: 'read', full: 'full' }[kind]}_${b64u(crypto.getRandomValues(new Uint8Array(32)))}`;
+    const { data, error } = await db.from('api_keys').insert({ name, scope: kind, hash: await sha256hex(key) }).select('id').single();
+    return error ? json({ error: error.message }, 500) : json({ ok: true, id: data.id, key });
+  }
+  if (req.method === 'POST' && action === 'keys-revoke') {
+    const b = await req.json();
+    const { data: k } = await db.from('api_keys').select('id,scope,expires_at').eq('id', String(b?.id ?? '')).is('revoked_at', null).maybeSingle();
+    if (!k || k.expires_at) return json({ error: 'no such key' }, 404);
+    if (k.scope === 'cron') return json({ error: 'the scheduler needs its key' }, 400);
+    const { error } = await db.from('api_keys').update({ revoked_at: new Date().toISOString() }).eq('id', k.id);
+    return error ? json({ error: error.message }, 500) : json({ ok: true });
+  }
+  if (req.method === 'PUT' && action === 'legacy') {
+    const b = await req.json();
+    if (typeof b?.off !== 'boolean') return json({ error: 'expected {off: true or false}' }, 400);
+    // Only from a Face ID session, so turning the old token off can't lock out the only way in
+    if (b.off && !who.session) return json({ error: 'unlock with Face ID first' }, 403);
+    legacyCache = null;
+    const l = await legacy();
+    const { error } = await db.from('app_settings').upsert({ key: 'legacy_token', value: { off: b.off, last_used: l.last_used ?? null }, updated_at: new Date().toISOString() });
+    legacyCache = null;
+    return error ? json({ error: error.message }, 500) : json({ ok: true, off: b.off });
+  }
+  if (req.method === 'POST' && action === 'logout') {
+    if (who.session) await db.from('api_keys').update({ expires_at: new Date().toISOString() }).eq('id', who.session);
+    return json({ ok: true });
+  }
 
   // Push: the public key to subscribe with, devices in and out, a test message, and a status line for the app
   if (req.method === 'GET' && action === 'push-key') return json({ key: b64u((await vapid()).pub) });

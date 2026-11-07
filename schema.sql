@@ -59,9 +59,36 @@ create table public.api_keys (
   hash text not null unique,                       -- SHA-256 (hex) of the key; the key itself is never stored here
   created_at timestamptz not null default now(),
   last_used_at timestamptz,
-  revoked_at timestamptz                           -- set to turn a key off
+  revoked_at timestamptz,                          -- set to turn a key off
+  expires_at timestamptz                           -- set for Face ID sessions (12 hours); device keys never expire
 );
 alter table public.api_keys enable row level security;
+
+create table public.passkeys (
+  id text primary key,                             -- the credential id, base64url
+  public_key jsonb not null,                       -- its P-256 public key as a JWK
+  sign_count bigint not null default 0,
+  name text not null default 'iPhone',
+  created_at timestamptz not null default now(),
+  last_used_at timestamptz
+);
+alter table public.passkeys enable row level security;
+
+create table public.auth_challenges (
+  challenge text primary key,                      -- base64url, used once, valid for 5 minutes
+  kind text not null check (kind in ('register', 'login')),
+  ip text,
+  created_at timestamptz not null default now()
+);
+alter table public.auth_challenges enable row level security;
+
+create table public.auth_failures (
+  ip text primary key,                             -- 10 wrong keys within 10 minutes lock the address for 15 minutes
+  fails integer not null default 0,
+  first_at timestamptz not null default now(),
+  locked_until timestamptz
+);
+alter table public.auth_failures enable row level security;
 
 create table public.push_subscriptions (
   endpoint text primary key,                       -- a push service URL (Apple, Google, Mozilla or Microsoft only)
@@ -73,7 +100,7 @@ create table public.push_subscriptions (
 alter table public.push_subscriptions enable row level security;
 
 create table public.app_settings (
-  key text primary key,                            -- 'vapid' (the push key pair, made on first use), 'last_backup'
+  key text primary key,                            -- 'vapid' (the push key pair), 'last_backup', 'legacy_token' ({off, last_used}), 'webauthn_user'
   value jsonb not null,
   updated_at timestamptz not null default now()
 );

@@ -101,6 +101,7 @@ Every payment, newest first, grouped by day. Search matches the merchant, catego
 | Balance | From bank statements only, so it ends at the latest statement. After 35 days it asks for a newer one |
 | Notifications | Turn them on for this phone, send a test, or turn them off. See "Notifications" below |
 | Backup | When the latest weekly copy was made and how many payments it holds |
+| Security | Face ID for this phone, your passkeys, the keys your devices use, and the old token's switch. See "Face ID and keys" below |
 | Categories | Manage: rename a category, merge it into another (type an existing name), or delete it (its payments move to Uncategorized). It changes past payments, rules and limits. Transfers, Savings, Income, Cash deposit and Uncategorized are built in and can't be changed |
 
 ### Editing a payment
@@ -126,6 +127,17 @@ On Months, tap **Turn on notifications** and allow them. The iPhone shows notifi
 - **No SMS for 3 days:** in case the Shortcut has stopped.
 
 Each one is sent once. Alerts are checked every hour, so a limit crossed at 2 pm is announced by about 3 pm; the notification after each SMS is still instant. Notifications show amounts, so if you don't want them on the Lock Screen, set Settings > Notifications > Spending > Show Previews to When Unlocked.
+
+### Face ID and keys
+
+On Months, under Security:
+
+1. **Set up Face ID.** The app then opens locked, and Face ID unlocks it. It locks again when you leave it for 5 minutes, and opens with Face ID even without internet (your changes are sent at the next online unlock). The token is removed from the phone, so keep a copy somewhere safe.
+2. **New key for the Shortcut.** Choose "The SMS Shortcut", tap Create, then Copy. In Shortcuts, open the SMS automation, then Get Contents of URL, and paste it as the `x-api-key` header's value. This key can only add SMS.
+3. **New key for the widget and Siri.** Choose "The widget and Siri". In Scriptable, run the widget script and paste it in the token field; put it in the "My spending" shortcut's header too. This key can only read the month's summary.
+4. **Turn off the old token**, once "Last used" stops changing: anything still using it stops working. You can only turn it off after unlocking with Face ID, so you can't lock yourself out.
+
+Each key is shown only once, and Revoke turns one off at once. 10 wrong keys from one place within 10 minutes lock that place out for 15 minutes; your device keys and Face ID keep working through it. On a new phone, make a full key here first, open the new phone with it, set up Face ID there, and revoke the key.
 
 ### Savings plan
 
@@ -258,13 +270,18 @@ Change it in all three places:
 | Home says the last payment was days ago | The Shortcut stopped sending | Check the automation, then import a statement for the missing days |
 | Project not responding | Free Supabase projects pause when inactive | Restore it in the Supabase dashboard |
 | No notifications | Not turned on for this phone, the app wasn't opened from the Home Screen, or a Focus mode hides them | On Months, check it says "On for this phone" and tap Send a test. Then check Settings > Notifications > Spending |
+| "Too many wrong tries" | 10 wrong keys from this place within 10 minutes | Wait 15 minutes. Face ID and device keys keep working meanwhile |
+| Shortcut shows `unauthorized` after a change | The old token was turned off, or its key was revoked | Make a new Shortcut key in Security and paste it into the Shortcut |
+| Face ID doesn't open the app | The passkey was deleted from the phone or removed in Security | Tap "Use the token instead", or use a full key, then set up Face ID again |
 | Notifications stopped after a while | iOS dropped the subscription | Turn notifications off and on again on Months |
 
 ## Security and privacy
 
 - **This repo is public.** Never commit tokens, statements, exports or anything from the database.
-- **The token protects everything.** Anyone who has it can read, change and delete your financial data. There's no rate limiting, so it must be long and random. A short one can be guessed.
-- **Saved on the phone.** The dashboard keeps the token in the browser's local storage.
+- **Face ID opens the app.** The server checks each unlock (a passkey signature) and gives a 12-hour session, kept only until the app closes. The long-lived token is removed from the phone.
+- **Each device has its own key:** the Shortcut's can only add SMS, the widget's can only read the summary. Keys are stored only as hashes and can be revoked at once.
+- **Wrong keys are locked out:** 10 from one place within 10 minutes block it for 15 minutes.
+- **The old token still opens everything until you turn it off** in Security. Turn it off once your devices use their own keys.
 - **The database is closed.** RLS is on with no policies, so the public Supabase API can't read the tables. All access goes through the function.
 - **Statement imports are reduced.** Raw descriptions, national IDs, account numbers and IBANs aren't stored. Names of people you transfer with are kept, because you need them to see where money went.
 - **SMS text is stored as received** in `raw_text`, including the last digits of cards and accounts. The API doesn't return it.

@@ -32,7 +32,8 @@ The complete technical reference. Read [README.md](README.md) first for what the
 | Frontend | Netlify, from this repo's root | Static, no build step |
 | API | Supabase Edge Function `sms-ingest` | Deno, `verify_jwt` off, deploys separately from the repo |
 | Database | Supabase Postgres | Project ref is in the `API` constant in `index.html` |
-| Secret | `APP_TOKEN` in Supabase function secrets | Value is never in the repo. `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are provided by Supabase |
+| Secret | `APP_TOKEN` (the old token) in Supabase function secrets | Value is never in the repo. `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are provided by Supabase |
+| Sign-in | Face ID passkeys in `passkeys`; device keys and Face ID sessions in `api_keys`, as hashes | See "Who can call the API" |
 | SMS input | iOS Shortcuts automation on the user's phone | Agents can't see or change it |
 | Widgets | `widget.js` in the Scriptable app on the phone | Calls `?action=summary`; the token, salary and saving are in the iPhone Keychain |
 | Scheduler | `pg_cron` job `spending-tick`, 7 minutes past every hour | Calls `?action=tick` through `pg_net` with a `cron` key kept in Vault as `cron_key` |
@@ -44,7 +45,23 @@ The complete technical reference. Read [README.md](README.md) first for what the
 
 Base URL: `https://<project-ref>.supabase.co/functions/v1/sms-ingest`
 
-Every request needs `x-api-key`: `APP_TOKEN` for full access, or a key in `api_keys`, which keeps only the key's SHA-256 and a scope. Anything else gets `401 {"error":"unauthorized"}`. Before comparing, the key and `APP_TOKEN` are normalized: whitespace and invisible direction characters are removed, and Arabic digits are converted. A `cron` key can only call `?action=tick`; anything else with a key that isn't full access gets `403 {"error":"forbidden"}` (the `read` and `ingest` scopes are for the device keys still to come). CORS allows all origins and `GET, POST, PUT, PATCH, DELETE`, which is acceptable because auth uses an explicit header and not cookies. Errors come back as JSON with the CORS headers; a body that isn't valid JSON gets `400 {"error":"invalid JSON"}`.
+Every request but the two Face ID unlock calls needs `x-api-key`, checked by `auth()`. Before comparing, the key is normalized: whitespace and invisible direction characters are removed, and Arabic digits are converted. CORS allows all origins and `GET, POST, PUT, PATCH, DELETE`, which is acceptable because auth uses an explicit header and not cookies. Errors come back as JSON with the CORS headers; a body that isn't valid JSON gets `400 {"error":"invalid JSON"}`.
+
+### Who can call the API
+
+| Key | Can do | Where it lives |
+|---|---|---|
+| `APP_TOKEN`, the old token | Everything, until it's turned off in Security (`app_settings` `legacy_token`) | Function secrets |
+| `ingest` device key (`sms_...`) | `POST` an SMS (no `action`), and get its notice | The SMS Shortcut |
+| `read` device key (`read_...`) | `GET ?action=summary` | The widget and the Siri shortcut |
+| `full` device key (`full_...`) | Everything | A computer, for a statement import; revoke it afterwards |
+| Face ID session | Everything, for 12 hours | The app, in `sessionStorage`, after an unlock |
+| `cron` key | `POST ?action=tick` | Vault (`cron_key`), for `pg_cron` |
+
+- A wrong key gets `401 {"error":"unauthorized"}`; a key outside its job gets `403 {"error":"forbidden"}`.
+- Keys and sessions are 32 random bytes, stored only as SHA-256. A key is shown once, when it's made.
+- **Lockout:** 10 wrong keys or failed unlocks from one address (Cloudflare's `cf-connecting-ip`) within 10 minutes lock that address for 15 minutes: `429 {"error":"locked"}`. While locked, the old token is refused even when it's right, so it can't be guessed; device keys and sessions still work, because they're random and can't be guessed anyway. So a Shortcut with its own key never loses an SMS to a lockout.
+- The old token can be turned off only from a Face ID session, so turning it off can't lock out the last way in. To turn it back on without the app, delete the `legacy_token` row in `app_settings`.
 
 ### POST (no query): ingest an SMS
 
@@ -112,6 +129,24 @@ Returns every payment as an array, without `raw_text` or `ref`. Supabase caps ea
 ### DELETE ?id=uuid
 
 Permanently deletes one row. Returns `{"ok":true}`.
+
+### Face ID: passkeys (WebAuthn, ES256)
+
+The relying party is the site's host (`RP_ID`, from `SITE`; tests set `APP_ORIGIN`). `cbor()`, `authData()`, `coseToJwk()` and `derToRaw()` read the browser's replies, and WebCrypto checks the signature. Challenges are 32 random bytes in `auth_challenges`, used once (any attempt uses its challenge up) and valid for 5 minutes; at most 10 wait per address.
+
+- `POST ?action=passkey-register-options` (full access): creation options for a platform authenticator with user verification (Face ID), no attestation, excluding passkeys already set up.
+- `POST ?action=passkey-register` (full access): the credential (`clientDataJSON`, `attestationObject`, base64url) and a `name`. Checks the challenge, `webauthn.create`, the origin, the site hash, and the user present and verified flags, then keeps the credential id and its public key. Returns `{ok, id, jwk, session: {token, expires_at}}`.
+- `POST ?action=passkey-options` (no key): unlock options with this account's passkeys, or `404` before any exist.
+- `POST ?action=passkey-login` (no key): the assertion (`clientDataJSON`, `authenticatorData`, `signature`). Checks the challenge, `webauthn.get`, the origin, the site hash, user verification, the signature counter (Apple's stay at 0; one that doesn't go up is refused), and the signature. Returns `{ok, token, expires_at}`: a 12-hour session. A failure counts toward the lockout.
+- `GET ?action=passkeys`, `POST ?action=passkey-delete {id}`: list and remove passkeys.
+- `POST ?action=logout`: ends the calling session (the app does this when it locks).
+
+### Device keys and the old token
+
+- `GET ?action=keys`: `{"keys":[{"id","name","scope","created_at","last_used_at"}],"legacy":{"off":false,"last_used":"..."}}`, without sessions or revoked keys.
+- `POST ?action=keys {name, scope: ingest | read | full}`: `{"ok":true,"id":"...","key":"sms_..."}`. The key is not stored and can't be shown again.
+- `POST ?action=keys-revoke {id}`: turns a key off at once. The scheduler's key can't be revoked here.
+- `PUT ?action=legacy {off}`: turns the old token off (only from a Face ID session) or back on.
 
 ### POST ?action=tick: run the scheduled jobs
 
@@ -184,7 +219,15 @@ Neither has a database constraint, so new values won't error. The frontend must 
 
 ### api_keys
 
-`id`, `name`, `scope` (`full`, `read`, `ingest` or `cron`), `hash` (SHA-256 of the key in hex, unique), `created_at`, `last_used_at`, `revoked_at` (set to turn a key off). So far only the scheduler's `cron` key exists. It was made inside the database: the key itself is only in Vault, as `cron_key`.
+`id`, `name`, `scope` (`full`, `read`, `ingest` or `cron`), `hash` (SHA-256 of the key in hex, unique), `created_at`, `last_used_at`, `revoked_at` (set to turn a key off), `expires_at` (set only for Face ID sessions). The scheduler's `cron` key was made inside the database: the key itself is only in Vault, as `cron_key`. Sessions are deleted a day after they end.
+
+### passkeys
+
+`id` (credential id, base64url), `public_key` (JWK), `sign_count`, `name`, `created_at`, `last_used_at`.
+
+### auth_challenges, auth_failures
+
+`auth_challenges`: `challenge`, `kind` (`register` or `login`), `ip`, `created_at`; one row per challenge waiting to be used. `auth_failures`: `ip`, `fails`, `first_at`, `locked_until`; the lockout's counters.
 
 ### push_subscriptions
 
@@ -192,7 +235,7 @@ Neither has a database constraint, so new values won't error. The frontend must 
 
 ### app_settings
 
-`key` (primary key), `value` (jsonb), `updated_at`. `vapid` holds the push key pair; its private key, a JWK, never leaves the database and the function. `last_backup` holds the latest backup's details.
+`key` (primary key), `value` (jsonb), `updated_at`. `vapid` holds the push key pair; its private key, a JWK, never leaves the database and the function. `last_backup` holds the latest backup's details, `legacy_token` `{off, last_used}` the old token's switch (its last use is written at most every 10 minutes), and `webauthn_user` the stable user id passkeys are made for.
 
 ### notify_log
 
@@ -445,6 +488,9 @@ Everything is in `index.html`.
 | `bnplState()`, `instalmentsDue()`, `planCovers()`, `bnplGuess()`, `renderBnpl()`, `openBnpl()`, `saveBnpl()` | Tabby and Tamara on Months. A plan's instalments paid are payments whose merchant or category contains the provider (a first instalment paid in a shop shows the shop's name, so the category is what says Tamara), within 1 riyal of the instalment, from 3 days before it falls due, earliest first, each counted for one plan only: the same rules as `bnplState()` in `index.ts`. "Paid so far" (`paid`) counts that many instalments without a payment and starts the search after them, so it never double-counts and works as a minimum. Unpaid instalments this month are held back in `planLine()` and `forecast()` and listed in `dueSoon()`; a fixed cost that a plan covers is left out there. A new plan is filled in from the latest Tabby or Tamara payment no plan has claimed. Saving a plan reloads the payments |
 | `renderNotify()`, `turnOnPush()`, `testPush()`, `turnOffPush()`, `syncPush()` | Notifications on Months. The server's key is fetched when the button shows, so one tap asks permission and subscribes straight away, as iOS requires. A subscribed phone sends its subscription again once a day (`pushAt`) in case the server dropped it |
 | `loadStatus()`, `renderBackup()` | The backup line on Months, from `?action=status` |
+| `authKey()`, `keyRefused()` | The key for every request: this unlock's Face ID session (`sessionStorage` `sess`), else the token saved on this phone (`localStorage` `tok`). A refused session locks the app; a refused token asks again; `429` says to wait |
+| `passkey()`, `showLock()`, `unlock()`, `checkHere()`, `lockNow()` | Face ID. With a passkey on this phone (`localStorage` `passkey` = `{id, jwk}`) the app opens locked. The unlock challenge is fetched when the lock screen shows, so the tap goes straight to Face ID (iOS wants the WebAuthn call on the tap). Offline, `checkHere()` checks the signature against the saved public key and the copy on this phone opens (`localUnlock`); queued changes wait for the next online unlock. Leaving the app for 5 minutes calls `lockNow()`, which also ends the session on the server |
+| `setupFaceId()`, `renderSecurity()`, `secAction()` | Security on Months: set up Face ID (the token is then removed from this phone), passkeys, device keys (made in `keyDlg`, shown once with steps), and the old token's switch |
 
 ### Conventions
 
@@ -452,7 +498,8 @@ Everything is in `index.html`.
 - `counts()` in `index.ts` repeats `spend()` for the summary endpoint, and its `gaps()` repeats the dashboard's gap rules. Change both together.
 - Fixed costs skip `EVERYDAY` categories (food, groceries, transport, shopping, fuel), so a coffee at the same price a month apart isn't a bill.
 - **Personal numbers stay on the phone.** The savings plan (salary, monthly saving, goal) lives in `localStorage` under `plan`, and the typed balance under `balance`. Never put them in code, tests, docs or the database: the repo is public. Category limits are the exception, by the user's choice: they live in `category_limits` so the SMS notice and push alerts can use them.
-- Other `localStorage` keys: `tok`, `dupOk`, `monthsMode`, `recapSeen`, `limits` and `bnpl` (copies for offline use), `outbox`, `dataAt`, `billsSent`, `pushKey`, `pushAt`, `status`.
+- Other `localStorage` keys: `tok` (until Face ID is set up), `passkey`, `dupOk`, `monthsMode`, `recapSeen`, `limits` and `bnpl` (copies for offline use), `outbox`, `dataAt`, `billsSent`, `pushKey`, `pushAt`, `status`. `sessionStorage` holds `sess`, the Face ID session, so it's gone when the app closes.
+- `derToRaw()` exists in both files (the app uses it to check Face ID offline).
 - `bnplState()` exists in both files with the same rules, and so does the recap's list of new places, which leaves out transfers so a person's name never appears in a notification.
 - Calendar months in Riyadh time. "Today" is the real date, not the latest payment.
 - Each number needs something to compare with: Home compares with last month up to the same day. Differences under 100 SAR or 5% read "about the same", and there's no ▲/▼ verdict when either month is missing days.
@@ -471,6 +518,7 @@ On `localhost`, `API` becomes `/api`, so you can test without touching real data
 
 - Write a small local server that serves this folder and answers `/api` with a data snapshot. Keep both **outside this folder**.
 - That switch only applies on `localhost`. Never make the API URL configurable by URL parameter, because a malicious link could then capture the token.
+- For Face ID, run the real `index.ts` handler behind `/api` on the same localhost origin, with `APP_ORIGIN` set to it, and use Chromium's virtual authenticator (CDP `WebAuthn.addVirtualAuthenticator`, transport `internal`, user verification on).
 - Check at 375px and 320px wide, in light and dark, since this is a phone app. Test that nothing overflows.
 
 ### Widget
@@ -505,7 +553,8 @@ After deploying, check the scheduled jobs on real data with `POST ?action=tick&f
 
 | Issue | Impact | Suggested fix |
 |---|---|---|
-| One shared token, no rate limiting | A weak token can be guessed | Long random token; consider real auth |
+| The old token is long-lived | Until it's turned off, anyone who has it has full access | Give the Shortcut and widget their own keys, then turn it off in Security |
+| A new phone needs a key once | Face ID passkeys are per phone, and the token leaves a phone once Face ID is set up | Make a full key in Security on the old phone, open the new phone with it, set up Face ID, then revoke the key |
 | Generic statement merchant names | Labels such as `Online: Food` cover several shops, so renaming one for all renames them all | Rename those payments one at a time |
 | Spending and gap rules exist twice | `spend()` and the gap rules in the dashboard, and `counts()` and `gaps()` in the summary (widget, Siri, notice), must stay identical | Keep the consistency test; change both together |
 | Widget refresh and taps | iOS refreshes widgets every 15 to 30 minutes, and a tap opens Safari, not the Home Screen app | Platform limits for a web app |

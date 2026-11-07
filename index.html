@@ -109,6 +109,13 @@ dialog .chk{display:flex;gap:10px;align-items:center;font-size:17px;color:var(--
 #login p{color:var(--fg2);margin-top:8px}
 #login input{display:block;width:100%;margin:16px 0 12px;padding:12px 14px;border:1px solid var(--ring);border-radius:12px;background:var(--sheet);font-size:17px}
 #login .btn{width:100%}
+#login .link{display:block;margin:18px auto 0;text-align:center}
+#lockW p{margin-bottom:16px}
+h3.sub{font-size:15px;font-weight:600;color:var(--fg2);margin:18px 0 2px}
+h3.sub+.tx{border-top:0}
+#mSec .btn{width:100%;margin-top:10px}
+#mSec .label b{color:var(--fg);font-weight:600}
+#mSec .tx .a .link{font-size:15px}
 #tt{position:fixed;z-index:20;display:none;pointer-events:none;max-width:240px;padding:7px 10px;border-radius:10px;background:var(--fg);color:var(--page);font-size:15px}
 #tt b{display:block}
 .seg{display:flex;gap:4px;margin:0 0 14px;padding:4px;border-radius:12px;background:var(--card)}
@@ -147,9 +154,16 @@ dialog input[type=date]{-webkit-appearance:none;appearance:none;min-height:46px;
 <body>
 <div id="login" hidden>
   <h1>Spending</h1>
-  <p>Enter your token. It's saved only on this phone.</p>
-  <input id="tok" type="password" autocomplete="off" autocapitalize="off" aria-label="Token">
-  <button class="btn primary" id="go">Open</button>
+  <div id="lockW" hidden>
+    <p>Locked.</p>
+    <button class="btn primary" id="unlock">Unlock with Face ID</button>
+    <button class="link" id="useKey">Use the token instead</button>
+  </div>
+  <div id="tokW">
+    <p>Enter your token. It's saved only on this phone.</p>
+    <input id="tok" type="password" autocomplete="off" autocapitalize="off" aria-label="Token">
+    <button class="btn primary" id="go">Open</button>
+  </div>
   <div class="err" id="err"></div>
 </div>
 
@@ -211,6 +225,8 @@ dialog input[type=date]{-webkit-appearance:none;appearance:none;min-height:46px;
     <div id="mNotify"></div>
     <h2>Backup</h2>
     <div class="label" id="mBackup"></div>
+    <h2>Security</h2>
+    <div id="mSec"></div>
     <h2>Categories<button class="link" id="mCats">Manage</button></h2>
     <div class="label">Rename, merge or delete categories everywhere.</div>
   </section>
@@ -276,6 +292,20 @@ dialog input[type=date]{-webkit-appearance:none;appearance:none;min-height:46px;
   <div class="err" id="cErr"></div>
   <div class="acts"><button class="btn danger" id="cDel" hidden>Delete</button><button class="btn" id="cCancel">Close</button><button class="btn primary" id="cOk" hidden>Save</button></div>
 </dialog>
+<dialog id="keyDlg">
+  <h3>New key</h3>
+  <div id="kForm">
+    <label>For<select id="kScope"><option value="ingest">The SMS Shortcut: can only add SMS</option><option value="read">The widget and Siri: can only read this month's summary</option><option value="full">A computer, for a statement import: full access</option></select></label>
+    <label>Name<input id="kName" type="text" maxlength="40" autocomplete="off"></label>
+  </div>
+  <div id="kShow" hidden>
+    <div class="label" style="margin-top:12px">Copy it now: it's shown only once.</div>
+    <input id="kVal" type="text" readonly>
+    <div class="hint" id="kSteps"></div>
+  </div>
+  <div class="err" id="kErr"></div>
+  <div class="acts"><button class="btn" id="kCancel">Close</button><button class="btn primary" id="kOk">Create</button></div>
+</dialog>
 <dialog id="bnplDlg">
   <h3 id="iT">Instalment plan</h3>
   <div class="label" id="iInfo" style="margin-top:4px"></div>
@@ -338,7 +368,8 @@ const cityName = c => c ? c.charAt(0).toUpperCase() + c.slice(1).toLowerCase() :
 const allCats = () => [...new Set([...DEFAULT_CATS, ...data.map(p => p.category)])];
 const byId = id => data.find(p => String(p.id) === id);
 const label = p => p.kind === 'transfer_out' ? p.category : (p.merchant || 'Unknown'); // rent reads as "Rent & Housing", not the landlord's name
-const headers = () => ({'x-api-key': localStorage.getItem('tok') || ''});
+const authKey = () => { try { return sessionStorage.getItem('sess') || localStorage.getItem('tok') || ''; } catch (e) { return ''; } };
+const headers = () => ({'x-api-key': authKey()});
 
 // THE definition of spending. Purchases and fees add, refunds subtract. A transfer you send counts once
 // you give it a category other than Transfers or Savings (rent, for example). Money received never counts.
@@ -384,12 +415,13 @@ function setData(list) {
 }
 const setLimits = list => { limits = new Map(list.map(x => [x.category, Number(x.monthly)])); };
 async function load() {
-  if (!localStorage.getItem('tok')) return showLogin('');
+  if (!authKey() && !localUnlock) return showLock('');
   await flush();
   try {
+    if (!authKey()) throw new Error('unlocked offline'); // Face ID checked on this phone: open the copy
     const get = q => fetch(API + q, {headers: headers()}).catch(() => null);
     const [r, rl, rb] = await Promise.all([fetch(API, {headers: headers()}), get('?action=limits'), get('?action=bnpl')]);
-    if (r.status === 401) { localStorage.removeItem('tok'); return showLogin('Wrong token'); }
+    if (r.status === 401 || r.status === 429) return keyRefused(r.status);
     if (!r.ok) throw new Error(r.status);
     const text = await r.text();
     if (rl && rl.ok) { const l = await rl.json(); setLimits(l); store.set('limits', l); } else setLimits(store.get('limits', []));
@@ -417,11 +449,11 @@ async function load() {
 const outbox = () => store.get('outbox', []);
 const send = op => fetch(API + op.q, {method: op.method, headers: {...headers(), 'Content-Type': 'application/json'}, body: op.body ? JSON.stringify(op.body) : undefined});
 async function act(op) {
-  if (navigator.onLine !== false && !outbox().length) { // queued changes go first, to keep their order
+  if (navigator.onLine !== false && !outbox().length && authKey()) { // queued changes go first, to keep their order
     try {
       const r = await send(op);
       if (r.ok) return {ok: true, json: await r.json().catch(() => ({}))};
-      if (r.status < 500) return {ok: false, status: r.status};
+      if (r.status < 500 && r.status !== 401 && r.status !== 429) return {ok: false, status: r.status};
     } catch (e) { /* no connection: keep it below */ }
   }
   if (!store.set('outbox', [...outbox(), op])) return {ok: false};
@@ -429,10 +461,11 @@ async function act(op) {
 }
 async function flush() {
   let list = outbox();
+  if (!authKey()) return; // unlocked offline: they go after the next online unlock
   while (list.length) {
     let r;
     try { r = await send(list[0]); } catch (e) { return; } // still offline
-    if (r.status >= 500) return; // the server is having trouble: try later
+    if (r.status >= 500 || r.status === 401 || r.status === 429) return; // trouble, or no valid key yet: try later
     list = list.slice(1); store.set('outbox', list); // sent, or refused for good (the payment was deleted, for example)
   }
 }
@@ -459,7 +492,19 @@ function showOffline() {
   const msg = [at ? `Offline · your data from ${dayLabel(at)} ${hhmm(at)}` : '', n ? `${n} change${n === 1 ? '' : 's'} waiting to send` : ''].filter(Boolean).join(' · ');
   $('offline').hidden = !msg; $('offline').innerHTML = icon('warn') + `<span>${esc(msg)}</span>`;
 }
-function showLogin(msg) { $('login').hidden = false; $('app').hidden = true; $('tabs').hidden = true; $('err').textContent = msg; }
+function showLogin(msg) { $('login').hidden = false; $('app').hidden = true; $('tabs').hidden = true; $('lockW').hidden = true; $('tokW').hidden = false; $('err').textContent = msg; }
+// With Face ID on this phone: the lock screen. The unlock challenge is fetched now, so the tap goes straight to Face ID.
+function showLock(msg = '') {
+  if (!passkey()) return showLogin(msg);
+  $('login').hidden = false; $('app').hidden = true; $('tabs').hidden = true; $('lockW').hidden = false; $('tokW').hidden = true; $('err').textContent = msg;
+  prefetchLogin();
+}
+// A refused key: an ended Face ID session locks the app; a wrong token asks again; too many wrong tries wait
+function keyRefused(status) {
+  try { sessionStorage.removeItem('sess'); } catch (e) {}
+  if (status === 401 && !passkey()) localStorage.removeItem('tok');
+  return showLock(status === 429 ? 'Too many wrong tries from here. Try again in 15 minutes.' : passkey() ? 'Unlock again.' : 'Wrong token');
+}
 const changed = () => { fixedCache = null; dayCache = null; unusualCache = null; };
 
 function render() {
@@ -946,6 +991,7 @@ function renderMonths() {
   balChart();
   renderNotify();
   renderBackup(); loadStatus();
+  renderSecurity();
 }
 function renderCalendar() {
   const t = today(), now = monthIdx(t), sums = new Map();
@@ -1306,6 +1352,149 @@ async function catAction(to) {
 
 // ---------- wiring ----------
 $('hPrev').innerHTML = icon('prev'); $('hNext').innerHTML = icon('next');
+// ---------- Face ID ----------
+// A passkey on this phone ({id, jwk}) and the app opens with Face ID. The server checks each unlock and gives a session
+// for 12 hours, kept only until the app closes, or locks after 5 minutes away. Offline, Face ID is checked here against
+// the passkey's public key and the copy on this phone opens; changes wait for the next online unlock.
+const passkey = () => store.get('passkey', null);
+const b64uOf = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+let loginOpts = null, regOpts = null, localUnlock = false, hiddenAt = 0, secKeys = null, secAt = 0, newKey = null;
+const fresh = o => !!o && Date.now() - o.at < 4 * 60e3; // the server's challenges last 5 minutes
+async function prefetchLogin() {
+  if (fresh(loginOpts)) return;
+  try {
+    const r = await fetch(`${API}?action=passkey-options`, {method: 'POST'});
+    loginOpts = r.ok ? {...await r.json(), at: Date.now()} : null;
+    if (r.status === 429) $('err').textContent = 'Too many wrong tries from here. Try again in 15 minutes.';
+  } catch (e) { loginOpts = null; }
+}
+async function prefetchRegister() {
+  if (fresh(regOpts)) return;
+  try { const r = await post('?action=passkey-register-options'); regOpts = r.ok ? {...await r.json(), at: Date.now()} : null; } catch (e) { regOpts = null; }
+}
+// WebAuthn signs in DER; WebCrypto wants the two 32-byte numbers side by side (as derToRaw() in index.ts)
+function derToRaw(der) {
+  let i = 0;
+  const head = tag => { if (der[i++] !== tag) throw new Error('bad signature'); let n = der[i++]; if (n & 0x80) { let k = n & 0x7f; n = 0; while (k-- > 0) n = n * 256 + der[i++]; } return n; };
+  const int = () => { const n = head(2); let v = der.slice(i, i + n); i += n; while (v.length > 32 && v[0] === 0) v = v.slice(1); const o = new Uint8Array(32); o.set(v, 32 - v.length); return o; };
+  head(0x30);
+  const r = int(), s2 = int(), out = new Uint8Array(64); out.set(r); out.set(s2, 32); return out;
+}
+async function checkHere(cred, challenge) {
+  try {
+    const cd = JSON.parse(new TextDecoder().decode(cred.response.clientDataJSON)), ad = new Uint8Array(cred.response.authenticatorData);
+    if (cd.type !== 'webauthn.get' || cd.challenge !== challenge || cd.origin !== location.origin || !(ad[32] & 4)) return false;
+    const key = await crypto.subtle.importKey('jwk', passkey().jwk, {name: 'ECDSA', namedCurve: 'P-256'}, false, ['verify']);
+    const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', cred.response.clientDataJSON)), signed = new Uint8Array(ad.length + 32);
+    signed.set(ad); signed.set(hash, ad.length);
+    return await crypto.subtle.verify({name: 'ECDSA', hash: 'SHA-256'}, key, derToRaw(new Uint8Array(cred.response.signature)), signed);
+  } catch (e) { return false; }
+}
+async function unlock() {
+  const pk = passkey();
+  if (!pk) return showLogin('');
+  $('err').textContent = '';
+  const online = fresh(loginOpts), challenge = online ? loginOpts.challenge : b64uOf(crypto.getRandomValues(new Uint8Array(32)));
+  let cred;
+  try {
+    cred = await navigator.credentials.get({publicKey: {challenge: keyBytes(challenge), rpId: online ? loginOpts.rpId : location.hostname, allowCredentials: [{type: 'public-key', id: keyBytes(pk.id)}], userVerification: 'required', timeout: 60000}});
+  } catch (e) { loginOpts = null; prefetchLogin(); $('err').textContent = 'Face ID was cancelled. Tap Unlock to try again.'; return; }
+  loginOpts = null;
+  if (online) {
+    try {
+      const r = await fetch(`${API}?action=passkey-login`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id: cred.id, response: {clientDataJSON: b64uOf(cred.response.clientDataJSON), authenticatorData: b64uOf(cred.response.authenticatorData), signature: b64uOf(cred.response.signature), userHandle: cred.response.userHandle ? b64uOf(cred.response.userHandle) : null}})});
+      if (r.ok) { sessionStorage.setItem('sess', (await r.json()).token); localUnlock = false; return load(); }
+      return showLock(r.status === 429 ? 'Too many wrong tries from here. Try again in 15 minutes.' : 'Face ID didn\'t match this phone\'s passkey. Try again, or use the token.');
+    } catch (e) { /* the connection dropped: check it here instead */ }
+  }
+  if (await checkHere(cred, challenge)) { localUnlock = true; return load(); }
+  showLock('Face ID didn\'t match. Try again.');
+}
+// Leaving the app for 5 minutes locks it, and ends its session on the server too
+function lockNow() {
+  let k = null;
+  try { k = sessionStorage.getItem('sess'); sessionStorage.removeItem('sess'); } catch (e) {}
+  if (k) fetch(`${API}?action=logout`, {method: 'POST', headers: {'x-api-key': k}, keepalive: true}).catch(() => {});
+  localUnlock = false;
+  document.querySelectorAll('dialog[open]').forEach(d => d.close());
+  hideTip(); showLock();
+}
+async function setupFaceId() {
+  if (!fresh(regOpts)) { renderSecurity('Getting ready. Tap Set up Face ID again in a moment.'); prefetchRegister(); return; }
+  const o = regOpts;
+  regOpts = null;
+  let cred;
+  try {
+    cred = await navigator.credentials.create({publicKey: {challenge: keyBytes(o.challenge), rp: o.rp, user: {id: keyBytes(o.user.id), name: o.user.name, displayName: o.user.displayName}, pubKeyCredParams: o.pubKeyCredParams, timeout: o.timeout, attestation: 'none', authenticatorSelection: o.authenticatorSelection, excludeCredentials: (o.excludeCredentials || []).map(c => ({type: 'public-key', id: keyBytes(c.id)}))}});
+  } catch (e) { return renderSecurity(e.name === 'InvalidStateError' ? 'This phone already has a Spending passkey. Remove it below, then set up Face ID again.' : 'Face ID setup was cancelled.', true); }
+  try {
+    const r = await post('?action=passkey-register', {name: /iPhone/.test(navigator.userAgent) ? 'iPhone' : 'This device', id: cred.id, type: cred.type, response: {clientDataJSON: b64uOf(cred.response.clientDataJSON), attestationObject: b64uOf(cred.response.attestationObject)}});
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.status);
+    store.set('passkey', {id: j.id, jwk: j.jwk});
+    sessionStorage.setItem('sess', j.session.token);
+    localStorage.removeItem('tok'); // the long-lived token no longer lives on this phone
+    renderSecurity('Face ID is set up, and the token was removed from this phone. Keep a copy of the token somewhere safe: a new phone needs it, or a key from here.', true);
+  } catch (e) { renderSecurity('Could not set up Face ID: ' + e.message, true); }
+}
+const usedAt = iso => { const d = new Date(Date.parse(iso) + RIYADH), l = dayLabel(d, true); return l === 'Today' || l === 'Yesterday' ? `${l.toLowerCase()} ${hhmm(d)}` : l; };
+const SCOPE_TEXT = {ingest: 'Adds SMS only', read: 'Reads the summary only', full: 'Full access', cron: 'Runs the alerts and the backup'};
+// Months: Face ID, this account's passkeys, device keys and the old token. Keys need full access, so they're not shown
+// while the app is unlocked offline.
+async function renderSecurity(msg = '', force = false) {
+  const box = $('mSec'), pk = passkey();
+  let h = '';
+  if (pk) h += '<div class="label"><b>Face ID is on for this phone.</b> The app locks when you leave it for 5 minutes.</div>';
+  else if (window.PublicKeyCredential && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().catch(() => false)) {
+    h += '<button class="goal setup" id="secFace"><b>Set up Face ID</b><span class="label">Open the app with Face ID. The token is then removed from this phone.</span></button>';
+    prefetchRegister();
+  } else h += '<div class="label">Face ID isn\'t available in this browser.</div>';
+  if (force || !secKeys || Date.now() - secAt > 30e3) {
+    try {
+      const [r, rp] = await Promise.all([fetch(`${API}?action=keys`, {headers: headers()}), fetch(`${API}?action=passkeys`, {headers: headers()})]);
+      const j = r.ok ? await r.json() : null, pks = rp.ok ? await rp.json() : null;
+      secKeys = j && Array.isArray(j.keys) && j.legacy && Array.isArray(pks) ? {...j, passkeys: pks} : null; secAt = Date.now();
+    } catch (e) { secKeys = null; }
+  }
+  if (secKeys) {
+    if (secKeys.passkeys.length) h += '<h3 class="sub">Face ID passkeys</h3>' + secKeys.passkeys.map(x => `<div class="tx"><span class="m">${esc(x.name)}${pk && pk.id === x.id ? ' (this phone)' : ''}</span><span class="a"><button class="link" data-pk="${esc(x.id)}">Remove</button></span><span class="s">Added ${usedAt(x.created_at)}${x.last_used_at ? ' · used ' + usedAt(x.last_used_at) : ''}</span></div>`).join('');
+    h += '<h3 class="sub">Keys</h3>' + secKeys.keys.map(x => `<div class="tx"><span class="m">${esc(x.name)}</span><span class="a">${x.scope === 'cron' ? '' : `<button class="link" data-revoke="${esc(x.id)}">Revoke</button>`}</span><span class="s">${SCOPE_TEXT[x.scope] || esc(x.scope)} · ${x.last_used_at ? 'used ' + usedAt(x.last_used_at) : 'not used yet'}</span></div>`).join('') + '<button class="btn" id="secNewKey">New key</button>';
+    const l = secKeys.legacy;
+    h += `<h3 class="sub">Old token</h3><div class="tx"><span class="m">${l.off ? 'Turned off' : 'Works everywhere'}</span><span class="a"><button class="link" id="secLegacy">${l.off ? 'Turn on' : 'Turn off'}</button></span><span class="s">${l.last_used ? 'Last used ' + usedAt(l.last_used) : 'Not used recently'}</span></div>`;
+  } else if (localUnlock) h += '<div class="hint">Keys show once the app is online.</div>';
+  box.innerHTML = h + (msg ? `<div class="hint">${esc(msg)}</div>` : '');
+}
+async function secAction(e) {
+  const t = e.target.closest('button');
+  if (!t) return;
+  if (t.id === 'secFace') return setupFaceId();
+  if (t.id === 'secNewKey') { newKey = null; $('kForm').hidden = false; $('kShow').hidden = true; $('kOk').textContent = 'Create'; $('kName').value = ''; $('kErr').textContent = ''; return $('keyDlg').showModal(); }
+  if (t.dataset.revoke) {
+    if (!confirm('Revoke this key? Whatever uses it stops working at once.')) return;
+    const r = await post('?action=keys-revoke', {id: t.dataset.revoke}).catch(() => null);
+    return renderSecurity(r && r.ok ? 'Revoked.' : 'Could not revoke it. Check your connection.', true);
+  }
+  if (t.dataset.pk) {
+    const mine = passkey() && passkey().id === t.dataset.pk;
+    if (!confirm(mine ? 'Turn off Face ID for this phone? Opening the app will then need the token or a key.' : 'Remove this passkey? That phone can no longer unlock the app.')) return;
+    const r = await post('?action=passkey-delete', {id: t.dataset.pk}).catch(() => null);
+    if (r && r.ok && mine) store.del('passkey');
+    return renderSecurity(r && r.ok ? (mine ? 'Face ID is off for this phone. You can also delete the passkey in Settings, Passwords.' : 'Removed.') : 'Could not remove it. Check your connection.', true);
+  }
+  if (t.id === 'secLegacy') {
+    const off = !secKeys.legacy.off;
+    if (off && !(() => { try { return !!sessionStorage.getItem('sess'); } catch (er) { return false; } })()) return renderSecurity('Unlock with Face ID first: the old token can only be turned off from a Face ID unlock, so you can always get back in.');
+    if (off && !confirm('Turn off the old token? Anything still using it stops at once. If the SMS Shortcut still uses it, SMS stop being saved, so give the Shortcut and the widget their own keys first.')) return;
+    const r = await fetch(`${API}?action=legacy`, {method: 'PUT', headers: {...headers(), 'Content-Type': 'application/json'}, body: JSON.stringify({off})}).catch(() => null);
+    return renderSecurity(r && r.ok ? (off ? 'The old token is off.' : 'The old token works again.') : 'Could not change it. Check your connection.', true);
+  }
+}
+const KEY_STEPS = {
+  ingest: 'In Shortcuts, open the SMS automation, then Get Contents of URL, and replace the x-api-key header\'s value with this key. The next bank SMS uses it, and its notification shows it worked.',
+  read: 'In Scriptable, run the widget script and paste this key into the token field. For Siri, put it in the My spending shortcut\'s x-api-key header too.',
+  full: 'Use it for the statement import, then revoke it here.',
+};
+
 // ---------- notifications ----------
 // iPhone shows web notifications only for an app opened from the Home Screen (iOS 16.4 and later).
 const standalone = () => navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
@@ -1453,7 +1642,7 @@ $('cName').oninput = () => { const v = $('cName').value.trim(); $('cHint').textC
 $('cOk').onclick = () => catAction($('cName').value.trim());
 $('cDel').onclick = () => { if (confirm(`Delete "${catFrom}"? Its payments move to Uncategorized.`)) catAction('Uncategorized'); };
 $('cCancel').onclick = () => $('catDlg').close();
-addEventListener('online', () => { if (loadedAt) load(); });
+addEventListener('online', () => { if (loadedAt && authKey()) load(); });
 $('mGoal').onclick = e => { if (e.target.closest('#mPlan')) openPlan(); };
 
 // ---------- savings plan sheet ----------
@@ -1477,11 +1666,29 @@ $('pDel').onclick = () => { if (!confirm('Remove your savings plan?')) return; t
 $('pCancel').onclick = () => $('planDlg').close();
 $('tabs').onclick = e => { const b = e.target.closest('button'); if (!b) return; if (b.dataset.tab === tab) return scrollTo({top: 0, behavior: 'smooth'}); tab = b.dataset.tab; render(); scrollTo(0, 0); };
 $('go').onclick = () => { localStorage.setItem('tok', $('tok').value.trim()); $('err').textContent = ''; load(); };
+$('unlock').onclick = () => unlock();
+$('useKey').onclick = () => { $('lockW').hidden = true; $('tokW').hidden = false; $('err').textContent = ''; $('tok').focus(); };
+$('mSec').onclick = secAction;
+$('kOk').onclick = async () => {
+  if (newKey) { try { await navigator.clipboard.writeText(newKey); $('kOk').textContent = 'Copied'; } catch (e) { $('kVal').select(); $('kErr').textContent = 'Select the key and copy it.'; } return; }
+  const scope = $('kScope').value, name = $('kName').value.trim() || {ingest: 'SMS Shortcut', read: 'Widget and Siri', full: 'Statement import'}[scope];
+  $('kOk').disabled = true;
+  const r = await post('?action=keys', {name, scope}).catch(() => null);
+  $('kOk').disabled = false;
+  if (!r || !r.ok) { $('kErr').textContent = 'Could not make the key. Check your connection.'; return; }
+  newKey = (await r.json()).key;
+  $('kForm').hidden = true; $('kShow').hidden = false; $('kVal').value = newKey; $('kSteps').textContent = KEY_STEPS[scope]; $('kOk').textContent = 'Copy';
+};
+$('kCancel').onclick = () => { $('keyDlg').close(); if (newKey) { newKey = null; renderSecurity('', true); } };
 $('tok').onkeydown = e => { if (e.key === 'Enter') $('go').click(); };
 addEventListener('resize', () => { if (!$('app').hidden) render(); });
 addEventListener('scroll', hideTip, {passive: true});
 // The Home Screen app is often resumed, not reopened: fetch new payments when it comes back.
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && loadedAt && Date.now() - loadedAt > 60e3 && !document.querySelector('dialog[open]')) load(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return; }
+  if (passkey() && hiddenAt && Date.now() - hiddenAt > 5 * 60e3 && !$('app').hidden) return lockNow();
+  if (loadedAt && authKey() && Date.now() - loadedAt > 60e3 && !document.querySelector('dialog[open]')) load();
+});
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js');
 load();
 </script>
