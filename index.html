@@ -302,18 +302,23 @@ function cumulative(rows, n) {
 }
 const firstMonth = () => data.length ? Math.min(...data.map(p => monthIdx(p._d))) : monthIdx(today());
 const days = () => dayCache ||= [...new Set(data.map(p => dayNum(p._d)))].sort((a, b) => a - b);
-// Runs of 5+ days with no payments at all inside [from, to] (day numbers): totals there are incomplete.
+// Runs of 5+ days with no payments at all that touch [from, to] (day numbers), clipped to it: totals there are incomplete.
+// Each run is measured in full, so the 4 empty days that start a month count when they end a longer gap.
+// The same rules as gaps() in index.ts, which feeds the widget and Siri.
 function gaps(from, to) {
-  const d = days(); if (d.length) from = Math.max(from, d[0]);
-  const pts = [from - 1, ...d.filter(x => x >= from && x <= to), to + 1], out = [];
-  for (let i = 1; i < pts.length; i++) if (pts[i] - pts[i - 1] > 5) out.push([pts[i - 1] + 1, pts[i] - 1]);
+  const d = days(), out = [];
+  for (let i = 1; i <= d.length; i++) {
+    const a = d[i - 1] + 1, b = i < d.length ? d[i] - 1 : dayNum(today());
+    if (b - a >= 4 && b >= from && a <= to) out.push([Math.max(a, from), Math.min(b, to)]);
+  }
   return out;
 }
+// Whether [from, to] is missing data: it touches such a run, or it starts before the first payment.
+const incomplete = (from, to) => !days().length || days()[0] > from || gaps(from, to).length > 0;
 const range = ([a, b]) => a === b ? shortDate(fromDayNum(a)) : `${shortDate(fromDayNum(a))}–${shortDate(fromDayNum(b))}`;
 function partial(m) {
   const y = Math.floor(m / 12), mo = m % 12, start = dayNum(new Date(Date.UTC(y, mo, 1))), end = Math.min(dayNum(new Date(Date.UTC(y, mo, daysIn(y, mo)))), dayNum(today()));
-  const d = days();
-  return (d.length && d[0] - start >= 5 && d[0] <= end) || gaps(start, end).length > 0;
+  return incomplete(start, end);
 }
 function dayLabel(d, long) {
   const t = today(), ago = dayNum(t) - dayNum(d);
@@ -377,7 +382,7 @@ function renderHome() {
   if (prevCum.length) {
     const n = isNow ? Math.min(upto, prevCum.length) : prevCum.length, same = prevCum[n - 1], diff = total - same;
     const period = n < prevCum.length ? `1–${n} ${MON(pm)}` : MONTHS[pm];
-    const missing = stale || gaps(dn(py, pm, 1), dn(py, pm, n)).length > 0 || gaps(dn(vy, vm, 1), end).length > 0;
+    const missing = stale || incomplete(dn(py, pm, 1), dn(py, pm, n)) || incomplete(dn(vy, vm, 1), end);
     if (missing) d.textContent = '';
     else if (Math.abs(diff) < Math.max(100, same * 0.05)) d.innerHTML = `About the same as ${period} <span class="mut">(${whole(same)})</span>`;
     else { const more = diff > 0; d.classList.add(more ? 'bad' : 'good'); d.innerHTML = `<b>${more ? '▲' : '▼'} ${whole(Math.abs(diff))} ${more ? 'more' : 'less'}</b> than ${period}`; }

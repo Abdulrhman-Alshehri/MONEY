@@ -69,11 +69,13 @@ Body: JSON array of rows with the `payments` columns. Rows whose `ref` already e
 For the widget, Siri and the SMS notice. Riyadh time; computed by `summarize()` with `counts()`, which **must match `spend()` in `index.html`** (a test compares them on the same data).
 
 ```json
-{"month":"2026-11","day":6,"days_in_month":30,"spent":2376.59,"sent":303,"last_month":"October","last_same_day":3456.54,"last_total":7629.04,"comparable":true,"stale_days":0,"text":"You've spent 2,377 riyals this month, 1,080 less than October by this day."}
+{"month":"2026-11","day":6,"days_in_month":30,"spent":2376.59,"sent":303,"last_month":"October","last_same_day":3456.54,"last_total":7629.04,"comparable":true,"stale_days":0,"gaps":[],"top":[{"category":"Food & Cafes","amount":688.45},{"category":"Groceries","amount":412.3},{"category":"Transport","amount":230}],"text":"You've spent 2,377 riyals this month, 1,080 less than October by this day."}
 ```
 
 - `sent`: money sent to people (`transfer_out` in `Transfers`), which the plan's "left" subtracts too.
-- `comparable` is false when either month has a run of 5+ days without payments, or nothing arrived for 3 days (`stale_days`), as on the dashboard. `text` then gives no verdict.
+- `comparable` is false when nothing arrived for 3 days (`stale_days`), or when either period (this month so far, last month up to the same day) touches a run of 5+ days without payments, as on the dashboard. Runs are measured in full across month boundaries: 1–3 Mar counts when it ends a gap that began 20 Feb. That's why it reads from 5 days before last month. `text` then gives no verdict.
+- `gaps`: those runs from the start of last month to the latest payment, clipped to that period, as `[from, to]` dates (Riyadh, `YYYY-MM-DD`). The dashboard's "No data" warning shows the same ones. `gaps()` here repeats `gaps()` and `incomplete()` in `index.html`; a test compares them.
+- `top`: this month's 3 biggest categories by `counts()`, refunds taken off, as "Where it went" on Home.
 
 ### GET: list payments
 
@@ -314,7 +316,7 @@ Everything is in `index.html`.
 | `render()` | Shows the active tab: `renderHome()`, `renderPay()` or `renderMonths()` |
 | `totals()`, `cumulative()` | Category totals and running totals by day, both from `spend()` |
 | `paceChart()`, `balChart()` | SVG charts: this month against last month, and the statement balance |
-| `gaps()`, `partial()` | Runs of 5+ days with no payments, used for warnings and "partial" months |
+| `gaps()`, `incomplete()`, `partial()` | Runs of 5+ days with no payments, measured in full even where they cross into another month (`incomplete()` adds the days before the first payment). Used for the "No data" warning, holding back the comparison, and "partial" months. `gaps()` in `index.ts` must give the same answers |
 | `fixedCosts()` | Same merchant and amount about once a month on about the same day; feeds Every month and "Due this week" |
 | `saveReminder()`, `reviewNote()`, `forecast()`, `subsNote()`, `unusualNote()`, `overUsual()`, `dueSoon()` | The single heads-up on Home, first match wins. `reviewNote()` returns `{text, go: 'review'}`, which makes it tappable |
 | `duplicatePairs()`, `reviewItems()`, `renderReview()` | Review in Payments: SMS with the same merchant, amount and kind within 2 minutes (pairs marked "Both are real" are kept in `localStorage` under `dupOk`), `unknown` SMS, and Uncategorized spending |
@@ -328,7 +330,7 @@ Everything is in `index.html`.
 ### Conventions
 
 - Every total and chart uses `spend()`, so numbers always agree. `Savings` transfers are never spending; they feed the savings goal.
-- `counts()` in `index.ts` repeats `spend()` for the summary endpoint. Change both together.
+- `counts()` in `index.ts` repeats `spend()` for the summary endpoint, and its `gaps()` repeats the dashboard's gap rules. Change both together.
 - Fixed costs skip `EVERYDAY` categories (food, groceries, transport, shopping, fuel), so a coffee at the same price a month apart isn't a bill.
 - **Personal numbers stay on the phone.** The savings plan (salary, monthly saving, goal) lives in `localStorage` under `plan`. Never put it in code, tests, docs or the database: the repo is public.
 - Calendar months in Riyadh time. "Today" is the real date, not the latest payment.
@@ -352,7 +354,7 @@ On `localhost`, `API` becomes `/api`, so you can test without touching real data
 
 ### Widget
 
-`widget.js` runs in the Scriptable app. It reads `spending.token`, `spending.income` and `spending.save` from the iPhone Keychain (entered when the script runs inside the app), calls `?action=summary`, and keeps the last good result in Scriptable's documents folder for offline use. The plan maths (`left = salary − saving − spent − sent`) matches `planLine()`. Lock Screen sizes show only the ring and percentage, never amounts. It contains the API and site URLs, so update it if either changes. Tests run it against stand-ins for Scriptable's APIs.
+`widget.js` runs in the Scriptable app. It reads `spending.token`, `spending.income` and `spending.save` from the iPhone Keychain (entered when the script runs inside the app), calls `?action=summary`, and keeps the last good result in Scriptable's documents folder for offline use. The plan maths (`left = salary − saving − spent − sent`) matches `planLine()`. Lock Screen sizes show only the ring and percentage, never amounts. The large size adds "Where it went" from the summary's `top`; a widget can't stretch a bar to its own width, so the longest bar is sized from `Device.screenSize()`, kept a little short of the real width. When days are missing, the line under the numbers names the first gap ("No data 20 Feb–3 Mar") instead of comparing, as Home does. It contains the API and site URLs, so update it if either changes. Tests run it against stand-ins for Scriptable's APIs, including a check that the large size fits on the smallest iPhone.
 
 ### Service worker
 
@@ -382,7 +384,7 @@ Invoke-RestMethod -Method Post -Uri $env:SMS_URL -Headers @{"x-api-key"=$env:APP
 | No SMS and statement matching | Double counting if periods overlap | Match on minute and amount during import |
 | One shared token, no rate limiting | A weak token can be guessed | Long random token; consider real auth |
 | Generic statement merchant names | Weak merchant ranking | Add a merchant rename feature with an alias table |
-| Spending rules exist twice | `spend()` (dashboard) and `counts()` (summary for widget, Siri, notice) must stay identical | Keep the consistency test; change both together |
+| Spending and gap rules exist twice | `spend()` and the gap rules in the dashboard, and `counts()` and `gaps()` in the summary (widget, Siri, notice), must stay identical | Keep the consistency test; change both together |
 | Widget refresh and taps | iOS refreshes widgets every 15 to 30 minutes, and a tap opens Safari, not the Home Screen app | Platform limits for a web app |
 | No in-app review list for `unknown` rows | Unrecognized SMS sit in the list, dimmed | Add a review filter |
 | Fixed costs need an identical amount | A bill that changes each month isn't listed under Every month or "Due this week" | Group by merchant with a tolerance |
@@ -399,12 +401,11 @@ Invoke-RestMethod -Method Post -Uri $env:SMS_URL -Headers @{"x-api-key"=$env:APP
 - Alert when the balance is low or a subscription changes
 - Salary-to-salary view, since balance follows the pay cycle
 - Arabic interface
-- CSV export
 
 ## Checklist before finishing a change
 
 - [ ] No secrets or personal data in the diff
-- [ ] `spend()` is still the only definition of spending, and `counts()` in `index.ts` still matches it
+- [ ] `spend()` is still the only definition of spending, and `counts()` and `gaps()` in `index.ts` still match the dashboard
 - [ ] No personal numbers (salary, savings, names) in code, tests or docs
 - [ ] Tested at phone width
 - [ ] Test rows removed from the live database

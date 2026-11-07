@@ -1,5 +1,6 @@
 // Spending widget for Scriptable (iPhone).
 // Home Screen: what you've spent this month, what's left after saving, and the comparison with last month.
+// The large size adds where the money went: this month's 3 biggest categories.
 // Lock Screen: a ring with the share of this month's money already used, as a percentage. No amounts.
 // Your token, salary and monthly saving stay in this iPhone's Keychain; nothing personal is written in this file.
 //
@@ -12,18 +13,22 @@ const APP = 'https://candid-gecko-1d5b6a.netlify.app/';
 const KEY = { token: 'spending.token', income: 'spending.income', save: 'spending.save' };
 const CACHE = 'spending-widget.json';
 const BLUE = '#3987e5';
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const C = {
   bg: Color.dynamic(new Color('#f9f9f7'), new Color('#0d0d0d')),
   fg: Color.dynamic(new Color('#0b0b0b'), new Color('#f0efec')),
   fg2: Color.dynamic(new Color('#52514e'), new Color('#c3c2b7')),
   good: Color.dynamic(new Color('#006300'), new Color('#0ca30c')),
   bad: Color.dynamic(new Color('#d03b3b'), new Color('#e66767')),
+  acc: Color.dynamic(new Color('#2a78d6'), new Color(BLUE)), // the app's accent, for the category bars
 };
 
 const kc = (k) => (Keychain.contains(k) ? Keychain.get(k) : '');
 const numberOf = (v) => parseFloat(String(v).replace(/[,\s]/g, '')) || 0;
 const whole = (n) => Math.round(n).toLocaleString('en-US');
 const clock = (t) => { const d = new Date(t); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+const shortDate = (iso) => { const [, m, d] = iso.split('-').map(Number); return `${d} ${MON[m - 1]}`; };
+const range = ([a, b]) => (a === b ? shortDate(a) : `${shortDate(a)}–${shortDate(b)}`); // as on the app's Home
 
 async function settings() {
   const a = new Alert();
@@ -108,11 +113,51 @@ function text(stack, value, font, color) {
   return t;
 }
 
+// The line under the numbers: last month by the same day, or why there's no comparison.
+function status(col, s) {
+  if (s.comparable) {
+    const diff = s.spent - s.last_same_day, same = Math.abs(diff) < Math.max(100, s.last_same_day * 0.05), mon = s.last_month.slice(0, 3);
+    text(col, same ? `≈ same as ${mon}` : `${diff > 0 ? '▲' : '▼'} ${whole(Math.abs(diff))} vs ${mon}`, Font.systemFont(13), same ? C.fg2 : diff > 0 ? C.bad : C.good);
+  } else if (s.stale_days >= 3) text(col, `No SMS for ${s.stale_days} days`, Font.systemFont(13), C.bad);
+  else if (s.gaps && s.gaps.length) text(col, `No data ${range(s.gaps[0])}${s.gaps.length > 1 ? ' and more' : ''}`, Font.systemFont(13), C.fg2);
+}
+
+// How long the biggest category's bar can be. A widget can't stretch a bar to its own width, so this comes from the
+// screen: about the large widget's width less its padding, kept a little short so a bar is never cut off.
+function barRoom(padding) {
+  try {
+    const s = Device.screenSize();
+    return Math.max(200, Math.min(364, Math.min(s.width, s.height) * 0.82) - 2 * padding);
+  } catch (e) {
+    return 240;
+  }
+}
+
+// Large widget: this month's 3 biggest categories, as "Where it went" on the app's Home (refunds already taken off).
+function categories(w, top, room) {
+  text(w, 'Where it went', Font.semiboldSystemFont(13), C.fg2);
+  if (!top.length) { w.addSpacer(6); text(w, 'No spending yet', Font.systemFont(15), C.fg2); return; }
+  for (const c of top) {
+    w.addSpacer(8);
+    const line = w.addStack();
+    line.centerAlignContent();
+    text(line, c.category || 'Uncategorized', Font.systemFont(15), C.fg);
+    line.addSpacer();
+    text(line, whole(c.amount), Font.semiboldSystemFont(15), C.fg);
+    w.addSpacer(4);
+    const barRow = w.addStack(), bar = barRow.addStack();
+    bar.size = new Size(Math.max(4, Math.round((room * c.amount) / top[0].amount)), 8);
+    bar.cornerRadius = 4;
+    bar.backgroundColor = C.acc;
+    barRow.addSpacer();
+  }
+}
+
 function build(family, s) {
-  const w = new ListWidget(), lock = family.startsWith('accessory');
+  const w = new ListWidget(), lock = family.startsWith('accessory'), large = family === 'large' || family === 'extraLarge', pad = large ? 16 : 14;
   w.url = APP;
   w.refreshAfterDate = new Date(Date.now() + 15 * 60 * 1000);
-  if (!lock) { w.backgroundColor = C.bg; w.setPadding(14, 14, 14, 14); }
+  if (!lock) { w.backgroundColor = C.bg; w.setPadding(pad, pad, pad, pad); }
   if (s.error) {
     if (lock) text(w, '!', Font.boldSystemFont(22));
     else { const t = w.addText(s.error); t.font = Font.systemFont(13); t.textColor = C.fg2; }
@@ -130,21 +175,27 @@ function build(family, s) {
   }
   if (family === 'accessoryInline') { w.addText(`${Math.round(n.pct * 100)}% of this month used`); return w; }
   // Home Screen
+  const updated = s.offline ? `Offline · ${clock(s.at)}` : `Updated ${clock(s.at || Date.now())}`;
   const row = w.addStack(); row.layoutHorizontally();
   const col = row.addStack(); col.layoutVertically();
   text(col, 'Spent', Font.systemFont(13), C.fg2);
-  text(col, whole(s.spent), Font.boldSystemFont(family === 'small' ? 32 : 36), C.fg);
+  text(col, whole(s.spent), Font.boldSystemFont(family === 'small' ? 32 : large ? 48 : 36), C.fg);
   col.addSpacer(4);
   if (n.allowance > 0) {
     text(col, n.left >= 0 ? `${whole(n.left)} left` : `${whole(-n.left)} over plan`, Font.semiboldSystemFont(15), n.left >= 0 ? C.fg : C.bad);
     if (n.left >= 0) text(col, `${whole(n.left / n.daysLeft)} a day · ${n.daysLeft} day${n.daysLeft === 1 ? '' : 's'}`, Font.systemFont(13), C.fg2);
   }
-  if (s.comparable) {
-    const diff = s.spent - s.last_same_day, same = Math.abs(diff) < Math.max(100, s.last_same_day * 0.05), mon = s.last_month.slice(0, 3);
-    text(col, same ? `≈ same as ${mon}` : `${diff > 0 ? '▲' : '▼'} ${whole(Math.abs(diff))} vs ${mon}`, Font.systemFont(13), same ? C.fg2 : diff > 0 ? C.bad : C.good);
-  } else if (s.stale_days >= 3) text(col, `No SMS for ${s.stale_days} days`, Font.systemFont(13), C.bad);
+  status(col, s);
+  if (large) {
+    row.addSpacer();
+    row.addImage(ring(n.pct, 232, 21, new Color(BLUE), new Color(BLUE, 0.22), new Color(BLUE))).imageSize = new Size(116, 116);
+    if (Array.isArray(s.top)) { w.addSpacer(12); w.addSpacer(); categories(w, s.top, barRoom(pad)); } // a summary saved before categories existed has none
+    w.addSpacer();
+    text(w, updated, Font.systemFont(11), C.fg2);
+    return w;
+  }
   col.addSpacer();
-  text(col, s.offline ? `Offline · ${clock(s.at)}` : `Updated ${clock(s.at || Date.now())}`, Font.systemFont(11), C.fg2);
+  text(col, updated, Font.systemFont(11), C.fg2);
   if (family !== 'small') {
     row.addSpacer();
     row.addImage(ring(n.pct, 220, 20, new Color(BLUE), new Color(BLUE, 0.22), new Color(BLUE))).imageSize = new Size(104, 104);
@@ -154,7 +205,7 @@ function build(family, s) {
 
 if (config.runsInApp && !config.runsInWidget) await settings();
 const summary = kc(KEY.token) ? await load() : { error: 'Open Scriptable and run this script once to enter your token.' };
-const widget = build(config.widgetFamily || 'medium', summary);
+const widget = build(config.widgetFamily || 'large', summary);
 if (config.runsInWidget) Script.setWidget(widget);
-else await widget.presentMedium();
+else await widget.presentLarge();
 Script.complete();

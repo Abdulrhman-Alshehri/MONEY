@@ -109,42 +109,59 @@ function counts(p: any) {
 const sentToPeople = (p: any) => (!p.excluded && p.kind === 'transfer_out' && p.category === 'Transfers' ? num(p.amount) : 0);
 // deno-lint-ignore no-explicit-any
 const sameMerchant = (rows: any[], key: string) => rows.filter((p) => merchantKey(p.merchant) === key && !INCOMING.includes(p.kind)).map((p) => p.id);
-// A run of 5+ days with no payments up to `upto`: the comparison would be unfair, as on the dashboard.
-const hasGap = (days: Set<number>, upto: number, trailing: boolean) => {
-  const ds = [...days].filter((d) => d <= upto).sort((a, b) => a - b);
-  if (!ds.length || ds[0] > 5) return true;
-  for (let i = 1; i < ds.length; i++) if (ds[i] - ds[i - 1] > 5) return true;
-  return trailing && upto - ds[ds.length - 1] >= 5;
-};
+// Runs of 5+ days with no payments at all that touch [from, to] (day numbers), clipped to it: totals there are incomplete.
+// Each run is measured in full, so the 4 empty days that start a month count when they end a longer gap.
+// The same rules as gaps() and incomplete() in index.html. Here `days` begins with the day before the rows that were
+// read, so a run already going on then (or the time before the first payment) still counts as a gap.
+function gaps(days: number[], from: number, to: number, today: number) {
+  const out: [number, number][] = [];
+  for (let i = 1; i <= days.length; i++) {
+    const a = days[i - 1] + 1, b = i < days.length ? days[i] - 1 : today;
+    if (b - a >= 4 && b >= from && a <= to) out.push([Math.max(a, from), Math.min(b, to)]);
+  }
+  return out;
+}
+const isoDay = (n: number) => new Date(n * DAY).toISOString().slice(0, 10);
 
 // This month so far against last month by the same day, in Riyadh time. Feeds the widget, Siri and the SMS notice.
 async function summarize() {
   const now = new Date(Date.now() + RIYADH), y = now.getUTCFullYear(), m = now.getUTCMonth(), day = now.getUTCDate();
   const last = new Date(Date.UTC(y, m - 1, 1)), ly = last.getUTCFullYear(), lm = last.getUTCMonth();
   const sameDay = Math.min(day, new Date(Date.UTC(ly, lm + 1, 0)).getUTCDate());
-  const from = new Date(Date.UTC(ly, lm, 1) - RIYADH).toISOString();
+  const today = Math.floor(now.getTime() / DAY), thisStart = Date.UTC(y, m, 1) / DAY, lastStart = Date.UTC(ly, lm, 1) / DAY;
+  const readFrom = lastStart - 5; // 5 days early, so a gap that started before last month is seen at full length
+  const from = new Date(readFrom * DAY - RIYADH).toISOString();
   const { data, error } = await readAll(() => db.from('payments').select('id,amount,kind,category,excluded,occurred_at,created_at')
     .or(`occurred_at.gte."${from}",and(occurred_at.is.null,created_at.gte."${from}")`).order('created_at').order('id'));
   if (error) throw new Error(error.message);
-  let spent = 0, sent = 0, lastSame = 0, lastTotal = 0, seen = 0;
-  const thisDays = new Set<number>(), lastDays = new Set<number>();
+  let spent = 0, sent = 0, lastSame = 0, lastTotal = 0, lastSeen = false;
+  const seen = new Set<number>(), byCat = new Map<string, number>();
   for (const p of data) {
-    const d = new Date(new Date(p.occurred_at ?? p.created_at).getTime() + RIYADH), py = d.getUTCFullYear(), pm = d.getUTCMonth(), pd = d.getUTCDate();
-    if (py === y && pm === m && pd <= day) { spent += counts(p); sent += sentToPeople(p); thisDays.add(pd); seen = Math.max(seen, d.getTime()); }
-    else if (py === ly && pm === lm) { lastTotal += counts(p); if (pd <= sameDay) lastSame += counts(p); lastDays.add(pd); seen = Math.max(seen, d.getTime()); }
+    const t = new Date(p.occurred_at ?? p.created_at).getTime() + RIYADH, d = new Date(t), py = d.getUTCFullYear(), pm = d.getUTCMonth(), pd = d.getUTCDate();
+    if (t >= readFrom * DAY) seen.add(Math.floor(t / DAY));
+    if (py === y && pm === m && pd <= day) {
+      const v = counts(p);
+      spent += v; sent += sentToPeople(p);
+      if (v) byCat.set(p.category, (byCat.get(p.category) || 0) + v);
+    } else if (py === ly && pm === lm) { lastTotal += counts(p); if (pd <= sameDay) lastSame += counts(p); lastSeen = true; }
   }
-  const stale = seen ? Math.floor(now.getTime() / DAY) - Math.floor(seen / DAY) : 0;
-  const fair = lastDays.size > 0 && stale < 3 && !hasGap(thisDays, day, false) && !hasGap(lastDays, sameDay, true);
+  const days = [readFrom - 1, ...[...seen].sort((a, b) => a - b)], lastDay = days[days.length - 1];
+  const stale = Math.max(0, today - lastDay), end = Math.min(today, lastDay);
+  const missing = gaps(days, lastStart, end, today); // as the dashboard's warning: last month's start up to the latest payment
+  const fair = lastSeen && stale < 3 && !gaps(days, thisStart, end, today).length && !gaps(days, lastStart, lastStart + sameDay - 1, today).length;
   const diff = spent - lastSame;
   let text = `You've spent ${whole(spent)} riyals this month`;
   if (stale >= 3) text += `, but no payments have arrived for ${stale} days. Check the SMS Shortcut.`;
-  else if (!fair) text += '.';
+  else if (!fair) text += missing.length ? `. Some days have no data, so there's no comparison with ${MONTHS[lm]}.` : '.';
   else if (Math.abs(diff) < Math.max(100, lastSame * 0.05)) text += `, about the same as ${MONTHS[lm]} by this day.`;
   else text += `, ${whole(Math.abs(diff))} ${diff > 0 ? 'more' : 'less'} than ${MONTHS[lm]} by this day.`;
   return {
     month: `${y}-${String(m + 1).padStart(2, '0')}`, day, days_in_month: new Date(Date.UTC(y, m + 1, 0)).getUTCDate(),
     spent: round2(spent), sent: round2(sent), last_month: MONTHS[lm], last_same_day: round2(lastSame), last_total: round2(lastTotal),
-    comparable: fair, stale_days: stale, text,
+    comparable: fair, stale_days: stale, gaps: missing.map(([a, b]) => [isoDay(a), isoDay(b)]),
+    // Biggest categories this month, as totals() in index.html: refunds already taken off
+    top: [...byCat].filter(([, v]) => v > 0.5).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([category, v]) => ({ category, amount: round2(v) })),
+    text,
   };
 }
 

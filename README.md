@@ -67,7 +67,7 @@ Three tabs: **Home**, **Payments** and **Months**. Months are calendar months in
 |---|---|
 | Month name, ‹ › | The month you're looking at. It opens on the current month |
 | Spent | Spending in that month, so far for the current month |
-| Comparison | Against the month before, up to the same day: ▲ more, ▼ less, or "about the same" when the difference is under 100 SAR or 5%. **Hidden when either month is missing days**, because missing SMS would look like saving |
+| Comparison | Against the month before, up to the same day: ▲ more, ▼ less, or "about the same" when the difference is under 100 SAR or 5%. **Hidden when either month is missing days**, because missing SMS would look like saving. That includes a few empty days at the start of a month when they end a longer gap |
 | Warning | Missing days next to the total, or "Last payment was …" when nothing has arrived for 3 days |
 | Chart | This month's running total (blue) against last month's (grey) |
 | Left this month | With a savings plan: what's left after saving, spending and money sent to people, and how much that is a day. A past month shows how it ended against the plan |
@@ -173,7 +173,7 @@ Open the site in Safari, enter the token, then choose Share > Add to Home Screen
 ### 5. Optional: Siri and widgets
 
 - **Siri:** make a shortcut named, say, "My spending" with **Get Contents of URL** (the URL above plus `?action=summary`, method GET, header `x-api-key`), **Get Dictionary Value** (key `text`) and **Speak Text**. "Hey Siri, my spending" then says what you've spent this month and how that compares with last month.
-- **Widgets:** install the free Scriptable app, add a script, paste `widget.js`, and run it once to enter your token, salary and monthly saving (kept in the iPhone Keychain). Then add a Scriptable widget to the Home Screen (small or medium) or the Lock Screen (circular) and choose the script. The Lock Screen shows only a ring with the percentage of this month's money used.
+- **Widgets:** install the free Scriptable app, add a script, paste `widget.js`, and run it once to enter your token, salary and monthly saving (kept in the iPhone Keychain). Then add a Scriptable widget to the Home Screen (small, medium or large) or the Lock Screen (circular) and choose the script. The large one adds where the money went: your 3 biggest categories this month. When days are missing, the widget names them instead of comparing with last month. The Lock Screen shows only a ring with the percentage of this month's money used.
 
 ## Common tasks
 
