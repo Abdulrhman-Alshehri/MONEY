@@ -35,7 +35,7 @@ The complete technical reference. Read [README.md](README.md) first for what the
 | Secret | `APP_TOKEN` in Supabase function secrets | Value is never in the repo. `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are provided by Supabase |
 | SMS input | iOS Shortcuts automation on the user's phone | Agents can't see or change it |
 | Widgets | `widget.js` in the Scriptable app on the phone | Calls `?action=summary`; the token, salary and saving are in the iPhone Keychain |
-| Statement import | `tools/`, run on Windows PowerShell 5.1 | No Node, Python or PDF tools were available on the user's laptop |
+| Statement import | `Stmt.cs`, `extract.ps1`, `import.ps1` on Windows PowerShell 5.1, or `stmt.py` and `stmt_import.py` on Python 3 | No Node, Python or PDF tools were available on the user's laptop. The Python port runs in a cloud session |
 
 ## API
 
@@ -230,6 +230,11 @@ Matched against the Arabic type column in `import.ps1`. Order in the script matt
 | `إيداع رواتب`, `تحويل وارد - حساب المواطن`, `حوالة محلية واردة` | income | bank | Income |
 | `إيداع نقدي - صراف آلي` | cash_in | atm | Cash deposit |
 | `حوالة فورية محلية واردة`, `تحويل داخلي وارد` | transfer_in | transfer | Transfers |
+| Incoming transfer whose first description line starts `عكس` and mentions `نقاط بيع` (a card reversal paid back as a transfer) | refund | intl if `دولي` | Merchant `Card refund` |
+| `إيداع مكافأة طلاب`, `مستحقات أخرى من صاحب العمل` | income | bank | Income. Merchant is the payer, from the second description line, as for salary |
+| `سحب نقدي ...` (ATM withdrawals) | purchase | atm | `Cash withdrawal`, merchant `ATM cash withdrawal`. Counted as spending, since the cash gets spent |
+| `مدفوعات سداد` (SADAD) | purchase | bank | From MCC. Merchant is the first description line, such as the fee's name |
+| `شراء نقاط بيع الخليج` (GCC countries) | purchase | intl | From MCC |
 | `حوالة فورية محلية صادرة`, `تحويل داخلي صادر` | transfer_out | transfer | Transfers |
 | `رسوم تحويل`, `ضريبة القيمة المضافة` | fee | bank | Fees |
 | `حوالة صادرة` (seen as a traffic fine) | purchase | bank | Government |
@@ -245,6 +250,7 @@ Statement names aren't clean brand names:
 | Description looks like | Merchant becomes |
 |---|---|
 | `,Location Label` | `Location Label`. Usually a street or district, because the bank leaves the name part empty |
+| `NAME,Location` | `NAME`. Statements before August 2026 fill in the name part |
 | `City,INTL ATM` | `City (intl)` |
 | `riyadh,bolt eu` | `Bolt` |
 | Online row with no name, city `Jebah`, MCC 4121 | `Jeeny`, confirmed by matching refunds and SMS |
@@ -288,14 +294,16 @@ Other codes become `Uncategorized`. Small local shops often have odd codes, so M
 ```powershell
 # 1. Find the current highest seq (run in SQL): select max(seq) from payments;
 # 2. Extract, with output outside the repo. Oldest PDF first.
-.\tools\extract.ps1 -Pdf a.pdf,b.pdf -OutDir C:\private\stmt
+.\extract.ps1 -Pdf a.pdf,b.pdf -OutDir C:\private\stmt
 # 3. Reconcile against page 1, and review the type list.
 # 4. Dry run; prints counts by kind and category.
-$env:SNB_WORK="C:\private\stmt"; $env:SEQ_START="<max seq>"; .\tools\import.ps1
+$env:SNB_WORK="C:\private\stmt"; $env:SEQ_START="<max seq>"; .\import.ps1
 # 5. Send, after the user agrees.
-$env:SMS_URL="<function url>"; $env:APP_TOKEN="<token>"; $env:CONFIRM_IMPORT="yes"; .\tools\import.ps1
+$env:SMS_URL="<function url>"; $env:APP_TOKEN="<token>"; $env:CONFIRM_IMPORT="yes"; .\import.ps1
 # 6. Delete the output folder.
 ```
+
+Without Windows (a cloud session), the Python port does the same with the same refs: `python3 -I stmt.py <outdir> a.pdf b.pdf`, which also checks each statement against its page 1, then `SNB_WORK=<outdir> SEQ_START=<seq> python3 -I stmt_import.py` for the dry run, adding `SMS_URL`, `CONFIRM_IMPORT=yes` and `APP_TOKEN` to send. In a cloud session, save the token as a network secret for the Supabase host (header `x-api-key`) instead of an environment variable, so it never appears in the session. `stmt_import.py` repeats `import.ps1` rule for rule, in the same order: change both together.
 
 `SEQ_START` matters: the balance line sorts by `seq`, so a new statement must continue from the current highest. Import statements in date order. Importing an older statement after a newer one needs its `seq` values to sit before the existing ones.
 
@@ -393,7 +401,6 @@ Invoke-RestMethod -Method Post -Uri $env:SMS_URL -Headers @{"x-api-key"=$env:APP
 | Savings withdrawals matched by name | Money sent back from savings is only subtracted when the SMS shows the account name the same way in both directions | Let the user mark the savings account explicitly |
 | Savings plan is per phone | A new phone or a cleared app starts without the plan | Store it server-side if more than one device is used |
 | Statement and SMS amounts assume SAR | Foreign amounts rely on the bank's conversion | Fine unless SMS formats differ |
-| `tools/` is Windows-only | Other systems can't run imports | Port if needed |
 
 ## Ideas not built yet
 

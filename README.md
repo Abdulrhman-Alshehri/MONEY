@@ -49,11 +49,12 @@ Why it's built this way:
 | `sw.js` | Service worker: uses the network first and falls back to cache when offline |
 | `widget.js` | Scriptable widget for the Home Screen and Lock Screen. It holds no secrets: the token and plan stay in the iPhone Keychain |
 | `manifest.json`, `icon.svg` | Home Screen name and icon |
-| `supabase/functions/sms-ingest/index.ts` | Backend: SMS parsing, categories and the API |
-| `supabase/schema.sql` | Database tables and indexes |
-| `tools/Stmt.cs` | Reads SNB statement PDFs without needing any PDF software |
-| `tools/extract.ps1` | Runs the reader and checks every row against the running balance |
-| `tools/import.ps1` | Turns extracted rows into payments and uploads them. Dry run by default |
+| `index.ts` | Backend (the `sms-ingest` function): SMS parsing, categories and the API |
+| `schema.sql` | Database tables and indexes |
+| `Stmt.cs` | Reads SNB statement PDFs without needing any PDF software |
+| `extract.ps1` | Runs the reader and checks every row against the running balance |
+| `import.ps1` | Turns extracted rows into payments and uploads them. Dry run by default |
+| `stmt.py`, `stmt_import.py` | The same reader and import in Python 3, for a Mac or a cloud session. The reader also checks each statement against its page 1 |
 | `.gitignore` | Blocks PDFs, exports and `.env` files from this public repo |
 | `AGENTS.md` | Full technical reference |
 
@@ -182,7 +183,7 @@ Open the site in Safari, enter the token, then choose Share > Add to Home Screen
 Download the statement PDF from SNB and keep it **outside this repo**. Then, in PowerShell from the repo folder (no installs needed on Windows):
 
 ```powershell
-.\tools\extract.ps1 -Pdf "C:\path\statement.pdf" -OutDir "C:\private\stmt"
+.\extract.ps1 -Pdf "C:\path\statement.pdf" -OutDir "C:\private\stmt"
 ```
 
 Compare the printed debit total, credit total, row counts and end balance to page 1 of the PDF, and make sure `breaks=0`. Then do a dry run:
@@ -190,7 +191,7 @@ Compare the printed debit total, credit total, row counts and end balance to pag
 ```powershell
 $env:SNB_WORK = "C:\private\stmt"
 $env:SEQ_START = "<highest seq in the database>"
-.\tools\import.ps1
+.\import.ps1
 ```
 
 If the totals look right, send it:
@@ -199,7 +200,7 @@ If the totals look right, send it:
 $env:SMS_URL = "https://<project-ref>.supabase.co/functions/v1/sms-ingest"
 $env:APP_TOKEN = "<your token>"
 $env:CONFIRM_IMPORT = "yes"
-.\tools\import.ps1
+.\import.ps1
 ```
 
 Overlapping statements are safe, because rows already imported are skipped. **Rows that SMS already saved are not matched, so they'd be counted twice.** See "Statement and SMS overlap" in [AGENTS.md](AGENTS.md).

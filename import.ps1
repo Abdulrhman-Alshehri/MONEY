@@ -23,13 +23,16 @@ foreach ($f in (Get-ChildItem "$old\rows_*.tsv" | Sort-Object Name | ForEach-Obj
   $idLine = -1; for ($k=0;$k -lt $d.Count;$k++) { if ($d[$k] -match 'رقم الهوية') { $idLine=$k } }
   $kind='purchase';$chan='pos';$cat=$null;$m=$null
   if ($type -match '^شراء انترنت|عملية شراء|خصم') { $chan='online' }
-  if ($type -match 'دولي') { $chan='intl' }
+  if ($type -match 'دولي|الخليج') { $chan='intl' }
   if ($type -match 'إعادة|عكس') { $kind='refund' }
-  elseif ($type -match 'إيداع رواتب|حساب المواطن' -or ($type -match '^حوالة محلية واردة' )) { $kind='income';$chan='bank';$cat='Income'; $m= if ($type -match 'المواطن') {'Citizen Account'} else {$d[1]} }
+  elseif ($type -match 'إيداع رواتب|حساب المواطن|مكافأة طلاب|من صاحب العمل' -or ($type -match '^حوالة محلية واردة' )) { $kind='income';$chan='bank';$cat='Income'; $m= if ($type -match 'المواطن') {'Citizen Account'} else {$d[1]} }
   elseif ($type -match 'إيداع نقدي') { $kind='cash_in';$chan='atm';$cat='Cash deposit';$m='ATM cash deposit' }
+  elseif ($type -match 'سحب نقدي') { $chan='atm';$cat='Cash withdrawal';$m='ATM cash withdrawal' }
+  elseif ($type -match 'سداد') { $chan='bank';$m=$first }
   elseif ($type -match 'رسوم') { $kind='fee';$chan='bank';$cat='Fees';$m='Transfer fee' }
   elseif ($type -match 'ضريبة') { $kind='fee';$chan='bank';$cat='Fees';$m='VAT on fee' }
   elseif ($type -match '^حوالة صادرة') { $chan='bank';$cat='Government';$m='Traffic fine' }
+  elseif ($type -match 'وارد' -and $first -match '^عكس.*نقاط بيع') { $kind='refund';$m='Card refund'; if ($first -match 'دولي') { $chan='intl' } }
   elseif ($type -match 'واردة|وارد') { $kind='transfer_in';$chan='transfer';$cat='Transfers'; $m= if ($idLine -ge 0) {$d[$idLine+1]} else {$d[2]} }
   elseif ($type -match 'صادرة|صادر') { $kind='transfer_out';$chan='transfer';$cat='Transfers'; $m= if ($idLine -ge 0) {$d[$idLine+1]} else {$first} }
   $m = if ($m) { ($m -replace '^السيد ','') } else { $null }
@@ -38,6 +41,7 @@ foreach ($f in (Get-ChildItem "$old\rows_*.tsv" | Sort-Object Name | ForEach-Obj
    elseif ($first -match '^(.*),INTL ATM') { $m="$($Matches[1]) (intl)" }
    elseif ($first -match '^riyadh,bolt') { $m='Bolt' }
    elseif ($first -match '^,(.+)') { $m=$Matches[1] }
+   elseif ($first -match '^([^,]+),') { $m=$Matches[1].Trim() }
    elseif ($kind -eq 'refund') { $m= if ($first -match '^noon$') {'Noon'} else {$first} }
    elseif ($mcc -eq '4121' -and $city -eq 'Jebah') { $m='Jeeny' }
    elseif ($mcc -eq '4121' -and $line -match 'MCF') { $m='Bolt' }

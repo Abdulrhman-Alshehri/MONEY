@@ -8,3 +8,4 @@ rows_*
 page1_*
 .env
 .env.*
+__pycache__/
