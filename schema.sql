@@ -21,7 +21,7 @@ create table public.payments (
   seq integer,                                     -- bank order across statements, keeps the balance line correct
   note text,
   excluded boolean not null default false,         -- true = left out of all totals
-  sms_id text                                      -- id from a Shortcut that queues SMS offline; a repeat is ignored
+  sms_id text                                      -- id from sms.js, which queues SMS offline; a repeat is ignored
 );
 alter table public.payments enable row level security;
 

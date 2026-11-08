@@ -49,6 +49,7 @@ Why it's built this way:
 | `index.html` | The whole dashboard: HTML, CSS and JavaScript. No build step or libraries |
 | `sw.js` | Service worker: uses the network first, falls back to cache when offline, and shows push notifications |
 | `widget.js` | Scriptable widget for the Home Screen and Lock Screen. It holds no secrets: the token and plan stay in the iPhone Keychain |
+| `sms.js` | Optional Scriptable script for the SMS automation: keeps SMS that arrive without internet on the iPhone and sends them later. It holds no secrets: its key stays in Scriptable's storage on the phone |
 | `manifest.json`, `icon.svg` | Home Screen name and icon |
 | `index.ts` | Backend (the `sms-ingest` function): SMS parsing, categories and the API |
 | `schema.sql` | Database tables and indexes, the backup bucket and the hourly scheduler |
@@ -133,7 +134,7 @@ Each one is sent once. Alerts are checked every hour, so a limit crossed at 2 pm
 On Months, under Security:
 
 1. **Set up Face ID.** The app then opens locked, and Face ID unlocks it. It locks again when you leave it for 5 minutes, and opens with Face ID even without internet (your changes are sent at the next online unlock). The token is removed from the phone, so keep a copy somewhere safe.
-2. **New key for the Shortcut.** Choose "The SMS Shortcut", tap Create, then Copy. In Shortcuts, open the SMS automation, then Get Contents of URL, and paste it as the `x-api-key` header's value. This key can only add SMS.
+2. **New key for the Shortcut.** Choose "The SMS Shortcut", tap Create, then Copy. In Shortcuts, open the SMS automation, then Get Contents of URL, and paste it as the `x-api-key` header's value. If the automation runs the Spending SMS script instead (iPhone automation, step 5), tap ▶ on it in Scriptable and paste the key there. This key can only add SMS.
 3. **New key for the widget and Siri.** Choose "The widget and Siri". In Scriptable, run the widget script and paste it in the token field; put it in the "My spending" shortcut's header too. This key can only read the month's summary.
 4. **Turn off the old token**, once "Last used" stops changing: anything still using it stops working. You can only turn it off after unlocking with Face ID, so you can't lock yourself out.
 
@@ -202,28 +203,21 @@ Type the header on the English keyboard. To debug, temporarily add a **Show Resu
 
 4. Optional, a notification after each payment: add **Get Dictionary Value** (key `notice`, from Contents of URL), then **If** (Dictionary Value has any value) with **Show Notification** (Dictionary Value) inside it. It reads like "Jahez 45.50 · Food & Cafes: 410 this month · 3,240 total": the payment, what you've spent in its category this month, and all your spending this month. Login codes return no notice, so they stay silent.
 
-5. Optional, keep SMS that arrive without internet. SMS come in over the phone network even when there's no data (abroad with roaming off, or a weak signal), but the Shortcut needs internet to send them, so without this they're missing until a statement import fills them in. The fix saves each SMS in a folder first, deletes it only once the server has it, and sends what's waiting when the connection is back. If your phone is in Arabic, search the actions by one word: folder مجلد, file ملف, dictionary قاموس, date تاريخ, random عشوائي, repeat تكرار, notification إشعار, shortcut اختصار.
+5. Optional, keep SMS that arrive without internet. SMS come in over the phone network even when there's no data (abroad with data roaming off, or a weak signal), but the Shortcut needs internet to send them, so without this they're missing until a statement import fills them in. This step uses Scriptable, the free app the widget runs in. Its script `sms.js` saves each SMS on the iPhone first, sends it, deletes it once the server has it, and sends whatever is still waiting the next time it runs. Everything stays in Scriptable's storage on the phone, not in iCloud, so a full or switched-off iCloud doesn't matter.
 
-   **a. A shortcut named "Send queued SMS"** (Shortcuts > +). First make a folder named `SpendingQueue` in the Files app, in iCloud Drive › Shortcuts.
-   1. **Get Contents of Folder**: SpendingQueue.
-   2. **Repeat with Each** item in Folder Contents, and inside it:
-      - **Get Contents of URL**: the URL above, Method POST, header `x-api-key` = your SMS key, Request Body: File, set to Repeat Item.
-      - **Get Dictionary Value**: `ok` in Contents of URL.
-      - **If** Dictionary Value has any value: **Delete Files** with Repeat Item (Confirm Before Deleting off), then the notice steps from step 4.
-      - **Otherwise**: **Get Dictionary Value** `error` in Contents of URL, then **Show Notification** "SMS waiting: " and that value. The file stays and is sent next time.
+   **a. The script.** On the iPhone, open `sms.js` on your site (`https://<your-site>/sms.js`), select all and copy it. In Scriptable tap +, paste it, and name it `Spending SMS`. Then make its key in the app: Months › Security › New key › The SMS Shortcut, Create, Copy. Back in Scriptable, tap ▶ on Spending SMS and paste the key. The script checks the key with the server and keeps it on this iPhone. It only takes SMS keys, which can do nothing but add SMS.
 
-   Run it once by hand, so iOS asks for its permissions now instead of failing quietly in the background.
+   **b. The SMS automation.** Replace Get Contents of URL (step 3) and the notice (step 4) with:
+   1. **Run Script** (Scriptable): Script `Spending SMS`, Parameter: Shortcut Input, then tap it and choose Content (المحتوى). Turn off Run In App and Show When Run.
+   2. **If** (إذا) Script Result has any value, with **Show Notification** (إظهار الإشعار) of Script Result inside it.
 
-   **b. The SMS automation**, in place of the Get Contents of URL in step 3 and the notice in step 4:
-   1. **If** Shortcut Input has any value, and inside it:
-   2. **Format Date**: Current Date, Custom format `yyyyMMdd-HHmmss`. Then **Random Number** between 1000 and 9999.
-   3. **Dictionary** with two text keys: `text` = Shortcut Input's Content, and `id` = `sms-`, the Formatted Date, `-`, the Random Number.
-   4. **Save File**: the Dictionary, Ask Where to Save off, Destination Path `SpendingQueue/`, then the same id and `.json`.
-   5. **Run Shortcut**: Send queued SMS.
+   The notification is the same notice as before. With no internet it reads "No internet: this SMS is saved on your iPhone and sent once you're online (2 waiting)". When the key is refused, it says what to do.
 
-   **c. A second automation**: Wi-Fi › Any Network › When Joining, Run Immediately, with **Run Shortcut**: Send queued SMS. Every new bank SMS also sends whatever is waiting, so this only matters for coming back online with no new SMS.
+   **c. Optional: send what's waiting when you join Wi-Fi.** Add an automation: Wi-Fi › Any Network › When Joining, Run Immediately, with the same two actions and no Parameter. Every new SMS also sends what's waiting, so this only matters when you're back online and no SMS comes for a while.
 
-   Sending the same SMS twice is safe: the server keeps each `id` once and answers `duplicate` the second time. A wrong or revoked key doesn't lose SMS either: they wait in the folder, with a notification, until the key is fixed.
+   Sending the same SMS twice is safe: each one carries an `id`, which the server keeps once. A refused key doesn't lose SMS: they wait, with a notification, until you change the key (tap ▶ on Spending SMS › Change key). Tap ▶ any time to see what's waiting, or to Send now.
+
+   To try it: lock the phone with Wi-Fi and Mobile Data off, and have someone text you `شراء-POS بـ1 SAR من TEST SHOP مدى-ابل*0000 في 08/11/26 12:00`. The "No internet" notification should appear. Turn data back on, tap ▶ › Send now, then delete the test payment in the app.
 
 ### 4. Home Screen
 
@@ -286,7 +280,8 @@ Change it in all three places:
 | Row has no amount or merchant | A new SMS format | Add the format to `parse()`; see [AGENTS.md](AGENTS.md) |
 | Row missing from totals | `kind` is `unknown`, or it's excluded | Check the function's parsing and the payment's settings |
 | Same payment twice | A test message sent again | Tap it and delete it |
-| "SMS waiting" notifications | The queue can't reach the server: no internet, or a wrong key in Send queued SMS | They're sent by themselves once you're online; if it says `unauthorized`, put a new SMS key in the shortcut |
+| "No internet" or "SMS waiting" notifications | Spending SMS couldn't reach the server: no internet, or the key was refused | They're sent with the next SMS, or when you join Wi-Fi. If the key was refused, make a new SMS key and tap ▶ on Spending SMS › Change key |
+| "Spending SMS stopped: …" | An unexpected error in the script | The SMS is normally saved already: tap ▶ on Spending SMS to see what's waiting, and report the message |
 | Old dashboard after an update | Netlify isn't updated, or the old page is still open | Check the Deploys page, then fully close and reopen the app |
 | Dashboard keeps asking for the token | Wrong or changed token | Enter the current token |
 | Old payments disappear | The deployed function is older than `index.ts` and stops at 1000 rows | Redeploy `sms-ingest` |
@@ -304,6 +299,7 @@ Change it in all three places:
 - **This repo is public.** Never commit tokens, statements, exports or anything from the database.
 - **Face ID opens the app.** The server checks each unlock (a passkey signature) and gives a 12-hour session, kept only until the app closes. The long-lived token is removed from the phone.
 - **Each device has its own key:** the Shortcut's can only add SMS, the widget's can only read the summary. Keys are stored only as hashes and can be revoked at once.
+- **Waiting SMS stay on the phone.** Spending SMS keeps them, and its key, in Scriptable's storage on the iPhone, never in iCloud, until the server has them.
 - **Wrong keys are locked out:** 10 from one place within 10 minutes block it for 15 minutes.
 - **The old token still opens everything until you turn it off** in Security. Turn it off once your devices use their own keys.
 - **The database is closed.** RLS is on with no policies, so the public Supabase API can't read the tables. All access goes through the function.

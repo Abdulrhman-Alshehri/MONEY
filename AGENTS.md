@@ -34,7 +34,7 @@ The complete technical reference. Read [README.md](README.md) first for what the
 | Database | Supabase Postgres | Project ref is in the `API` constant in `index.html` |
 | Secret | `APP_TOKEN` (the old token) in Supabase function secrets | Value is never in the repo. `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are provided by Supabase |
 | Sign-in | Face ID passkeys in `passkeys`; device keys and Face ID sessions in `api_keys`, as hashes | See "Who can call the API" |
-| SMS input | iOS Shortcuts automation on the user's phone | Agents can't see or change it. With the optional queue (README, step 5) each SMS is saved to `iCloud Drive/Shortcuts/SpendingQueue` with an `id` and deleted once the server answers `ok`, so SMS that arrive offline are sent later and resends are deduplicated by `sms_id` |
+| SMS input | iOS Shortcuts automation on the user's phone | Agents can't see or change it. With the optional queue (README, step 5) the automation runs `sms.js` in Scriptable instead of posting itself; see "SMS queue" |
 | Widgets | `widget.js` in the Scriptable app on the phone | Calls `?action=summary`; the token, salary and saving are in the iPhone Keychain |
 | Scheduler | `pg_cron` job `spending-tick`, 7 minutes past every hour | Calls `?action=tick` through `pg_net` with a `cron` key kept in Vault as `cron_key` |
 | Push | Web Push sent by the function; the VAPID key pair is in `app_settings` | iPhone needs the Home Screen app and iOS 16.4 or later |
@@ -65,7 +65,7 @@ Every request but the two Face ID unlock calls needs `x-api-key`, checked by `au
 
 ### POST (no query): ingest an SMS
 
-Body: the SMS as plain text, or JSON with `text` or `message`. JSON may also carry an `id` (letters, digits, `_ . : -`, up to 100): a Shortcut that queues SMS while offline sends one, and a repeated `id` returns `{"ok":true,"duplicate":true}` without saving or a notice, so retries are safe. Without an `id`, identical SMS are all kept, since they can be real.
+Body: the SMS as plain text, or JSON with `text` or `message`. JSON may also carry an `id` (letters, digits, `_ . : -`, up to 100): `sms.js`, which queues SMS while offline, sends one, and a repeated `id` returns `{"ok":true,"duplicate":true}` without saving or a notice, so retries are safe. Without an `id`, identical SMS are all kept, since they can be real.
 
 ```json
 {"ok":true,"category":"Transport","amount":16.75,"type":"online","kind":"purchase","merchant":"Jeeny","occurred_at":"2026-11-05T09:30:00+03:00","notice":"Jeeny 16.75 · Transport: 410 this month · 3,240 total"}
@@ -203,7 +203,7 @@ The exact definition is in `schema.sql`. RLS is enabled with no policies on ever
 
 Neither has a database constraint, so new values won't error. The frontend must handle them.
 
-`sms_id` (text, unique when not null) holds the `id` a queuing Shortcut sends with an SMS, so a retry isn't saved twice.
+`sms_id` (text, unique when not null) holds the `id` that `sms.js` sends with an SMS, so a retry isn't saved twice.
 
 ### merchant_rules
 
@@ -524,6 +524,18 @@ On `localhost`, `API` becomes `/api`, so you can test without touching real data
 ### Widget
 
 `widget.js` runs in the Scriptable app. It reads `spending.token`, `spending.income` and `spending.save` from the iPhone Keychain (entered when the script runs inside the app), calls `?action=summary`, and keeps the last good result in Scriptable's documents folder for offline use. The plan maths (`left = salary − saving − spent − sent`) matches `planLine()`. Lock Screen sizes show only the ring and percentage, never amounts. The large size adds "Where it went" from the summary's `top`; a widget can't stretch a bar to its own width, so the longest bar is sized from `Device.screenSize()`, kept a little short of the real width. When days are missing, the line under the numbers names the first gap ("No data 20 Feb–3 Mar") instead of comparing, as Home does. It contains the API and site URLs, so update it if either changes. Tests run it against stand-ins for Scriptable's APIs, including a check that the large size fits on the smallest iPhone.
+
+### SMS queue
+
+`sms.js` runs in Scriptable, called by the SMS automation's Run Script action with the message as `args.shortcutParameter` (text, a dictionary with `text`, or a list are all read). It writes the SMS to `spending-sms/queue/<id>.json` under `FileManager.local()` (on the phone, never iCloud), as a `.tmp` file renamed into place so a file is never half written. Then it posts `{text, id}` and deletes the file on any `ok` answer, including `duplicate` and an ignored login code. The `id` is `sms-<yyyyMMdd-HHmmss>-<8 hex>`, so names sort by time; the server keeps each `id` once. The notification text goes back with `Script.setShortcutOutput()`: the server's `notice`, plus a line for anything that waited.
+
+- The new SMS goes first, then older ones, oldest first. A file another run saved in the last minute is left to that run, so its notice isn't lost (Send now in the app sends everything).
+- No connection, 401, 403, 429 or 5xx keeps the file and stops the run, since the rest would fail the same way. Another 4xx keeps that file and moves on. An unreadable file is renamed `.bad` and only reported in the app.
+- No new send starts after 15 seconds, and each request times out after 10, so the Shortcut never waits long; the rest go next time. Being stopped at any point loses nothing: the file stays until an `ok`.
+- If the file can't be written, the SMS is still posted directly, as before the queue.
+- The key is in `spending-sms/key`, not the Keychain: the automation usually runs while the phone is locked, and a Keychain item may not be readable then. Only `sms_` keys are accepted, and each is checked by posting an empty SMS: `400 empty` means it may add SMS, and nothing is saved.
+- Tapped ▶ in the app, it shows what's waiting and the last run's result (`spending-sms/last.json`), with Send now and Change key.
+- It contains the API URL, so update it if that changes. Tests run it against stand-ins for Scriptable's APIs, with its requests answered by the real `index.ts` handler: offline, a lost answer, a revoked key, server errors, a slow network, two runs at once, a full disk.
 
 ### Service worker
 
