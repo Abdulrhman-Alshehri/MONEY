@@ -133,7 +133,7 @@ Each one is sent once. Alerts are checked every hour, so a limit crossed at 2 pm
 
 On Months, under Security:
 
-1. **Set up Face ID.** The app then opens locked, and Face ID unlocks it. It locks again when you leave it for 5 minutes, and opens with Face ID even without internet (your changes are sent at the next online unlock). The token is removed from the phone, so keep a copy somewhere safe.
+1. **Set up Face ID.** The app then opens locked, and Face ID unlocks it. It locks again when you leave it for 5 minutes. The button reads Connecting… for a few seconds while the server wakes up. Without internet, Face ID opens the copy saved on the phone; once you're back online, tap "Tap to update" at the top (your changes are sent then). The token is removed from the phone, so keep a copy somewhere safe.
 2. **New key for the Shortcut.** Choose "The SMS Shortcut", tap Create, then Copy. In Shortcuts, open the SMS automation, then Get Contents of URL, and paste it as the `x-api-key` header's value. If the automation runs the Spending SMS script instead (iPhone automation, step 5), tap ▶ on it in Scriptable and paste the key there. This key can only add SMS.
 3. **New key for the widget and Siri.** Choose "The widget and Siri". In Scriptable, run the widget script and paste it in the token field; put it in the "My spending" shortcut's header too. This key can only read the month's summary.
 4. **Turn off the old token**, once "Last used" stops changing: anything still using it stops working. You can only turn it off after unlocking with Face ID, so you can't lock yourself out.
@@ -291,6 +291,7 @@ Change it in all three places:
 | No notifications | Not turned on for this phone, the app wasn't opened from the Home Screen, or a Focus mode hides them | On Months, check it says "On for this phone" and tap Send a test. Then check Settings > Notifications > Spending |
 | "Too many wrong tries" | 10 wrong keys from this place within 10 minutes | Wait 15 minutes. Face ID and device keys keep working meanwhile |
 | Shortcut shows `unauthorized` after a change | The old token was turned off, or its key was revoked | Make a new Shortcut key in Security and paste it into the Shortcut |
+| App says Offline though you have internet | It couldn't reach the server when you unlocked | Tap "Tap to update" at the top, or close and reopen the app |
 | Face ID doesn't open the app | The passkey was deleted from the phone or removed in Security | Tap "Use the token instead", or use a full key, then set up Face ID again |
 | Notifications stopped after a while | iOS dropped the subscription | Turn notifications off and on again on Months |
 

@@ -134,6 +134,8 @@ h3.sub+.tx{border-top:0}
 .recap b{font-weight:600}
 .offline{display:flex;gap:8px;align-items:center;margin:10px 0 0;padding:9px 12px;border-radius:12px;background:var(--card);font-size:15px;color:var(--fg2)}
 .offline .ico{color:var(--warn)}
+.offline.tap{cursor:pointer}.offline .go{color:var(--acc);white-space:nowrap}
+#lockNote{text-align:center}
 #hBal{cursor:pointer}
 dialog[open]:has(.big){display:flex;flex-direction:column;max-height:calc(100dvh - 24px)}
 dialog .big{flex:1 1 auto;min-height:72px;overflow-y:auto;margin:0 -4px;padding:0 4px}
@@ -157,6 +159,7 @@ dialog input[type=date]{-webkit-appearance:none;appearance:none;min-height:46px;
   <div id="lockW" hidden>
     <p>Locked.</p>
     <button class="btn primary" id="unlock">Unlock with Face ID</button>
+    <div class="hint" id="lockNote"></div>
     <button class="link" id="useKey">Use the token instead</button>
   </div>
   <div id="tokW">
@@ -487,10 +490,14 @@ function applyOp(op) {
   } else if (op.kind === 'limits') setLimits(b);
   else if (op.kind === 'bnpl') { bnpl = b.map(x => ({...x})); store.set('bnpl', bnpl); }
 }
+const canUpdate = () => localUnlock && !loginWait && fresh(loginOpts);
 function showOffline() {
-  const n = outbox().length, at = offlineAt ? new Date(offlineAt + RIYADH) : null;
-  const msg = [at ? `Offline · your data from ${dayLabel(at)} ${hhmm(at)}` : '', n ? `${n} change${n === 1 ? '' : 's'} waiting to send` : ''].filter(Boolean).join(' · ');
-  $('offline').hidden = !msg; $('offline').innerHTML = icon('warn') + `<span>${esc(msg)}</span>`;
+  const n = outbox().length, at = offlineAt ? new Date(offlineAt + RIYADH) : null, up = canUpdate();
+  const msg = [at ? `${up ? 'Your data is' : 'Offline · your data'} from ${dayLabel(at)} ${hhmm(at)}` : '', n ? `${n} change${n === 1 ? '' : 's'} waiting to send` : ''].filter(Boolean).join(' · ');
+  const el = $('offline');
+  el.hidden = !msg; el.innerHTML = icon('warn') + `<span>${esc(msg)}${up && msg ? ' · <span class="go">Tap to update</span>' : ''}</span>`;
+  el.classList.toggle('tap', up);
+  if (up) el.setAttribute('role', 'button'); else el.removeAttribute('role');
 }
 function showLogin(msg) { $('login').hidden = false; $('app').hidden = true; $('tabs').hidden = true; $('lockW').hidden = true; $('tokW').hidden = false; $('err').textContent = msg; }
 // With Face ID on this phone: the lock screen. The unlock challenge is fetched now, so the tap goes straight to Face ID.
@@ -1358,15 +1365,40 @@ $('hPrev').innerHTML = icon('prev'); $('hNext').innerHTML = icon('next');
 // the passkey's public key and the copy on this phone opens; changes wait for the next online unlock.
 const passkey = () => store.get('passkey', null);
 const b64uOf = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-let loginOpts = null, regOpts = null, localUnlock = false, hiddenAt = 0, secKeys = null, secAt = 0, newKey = null;
+let loginOpts = null, loginWait = null, loginFailed = '', loginTimer = 0, regOpts = null, localUnlock = false, hiddenAt = 0, secKeys = null, secAt = 0, newKey = null;
 const fresh = o => !!o && Date.now() - o.at < 4 * 60e3; // the server's challenges last 5 minutes
-async function prefetchLogin() {
-  if (fresh(loginOpts)) return;
+// The unlock challenge. iOS wants Face ID to start on the tap itself, so the challenge is fetched beforehand, and the
+// button waits for it: a tap without one would open the copy on this phone even when the server is reachable.
+// loginFailed: '' (got one, or not tried), 'net' (no connection, timeout or server error), 'refused' (404 or 429).
+function prefetchLogin(again = false) {
+  if (loginWait) return loginWait;
+  if (!again && fresh(loginOpts)) { lockState(); return Promise.resolve(); }
+  loginWait = getChallenge();
+  lockState(); // only now, so the button says Connecting… while it's fetched
+  return loginWait;
+}
+async function getChallenge() {
+  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 10e3);
   try {
-    const r = await fetch(`${API}?action=passkey-options`, {method: 'POST'});
+    const r = await fetch(`${API}?action=passkey-options`, {method: 'POST', signal: ctl.signal});
     loginOpts = r.ok ? {...await r.json(), at: Date.now()} : null;
+    loginFailed = r.ok ? '' : r.status >= 500 ? 'net' : 'refused';
     if (r.status === 429) $('err').textContent = 'Too many wrong tries from here. Try again in 15 minutes.';
-  } catch (e) { loginOpts = null; }
+  } catch (e) { loginOpts = null; loginFailed = 'net'; }
+  clearTimeout(t);
+  loginWait = null;
+  clearTimeout(loginTimer);
+  if (loginOpts) loginTimer = setTimeout(() => { if (wantsLogin()) prefetchLogin(true); }, 3.5 * 60e3); // keep one ready
+  lockState();
+}
+// Showing the lock screen, or opened from the copy on this phone (so an update can be offered)
+const wantsLogin = () => document.visibilityState === 'visible' && (localUnlock || (!$('login').hidden && !$('lockW').hidden));
+function lockState() {
+  const wait = !!loginWait;
+  $('unlock').disabled = wait;
+  $('unlock').textContent = wait ? 'Connecting…' : 'Unlock with Face ID';
+  $('lockNote').textContent = !wait && loginFailed === 'net' ? 'No connection. Face ID opens the copy saved on this phone.' : '';
+  if (localUnlock && !$('app').hidden) showOffline();
 }
 async function prefetchRegister() {
   if (fresh(regOpts)) return;
@@ -1393,6 +1425,8 @@ async function checkHere(cred, challenge) {
 async function unlock() {
   const pk = passkey();
   if (!pk) return showLogin('');
+  if (loginWait) return; // the button says Connecting… meanwhile
+  if (!fresh(loginOpts) && !loginFailed) return prefetchLogin(); // an old challenge: get a new one, then tap again
   $('err').textContent = '';
   const online = fresh(loginOpts), challenge = online ? loginOpts.challenge : b64uOf(crypto.getRandomValues(new Uint8Array(32)));
   let cred;
@@ -1407,7 +1441,7 @@ async function unlock() {
       return showLock(r.status === 429 ? 'Too many wrong tries from here. Try again in 15 minutes.' : 'Face ID didn\'t match this phone\'s passkey. Try again, or use the token.');
     } catch (e) { /* the connection dropped: check it here instead */ }
   }
-  if (await checkHere(cred, challenge)) { localUnlock = true; return load(); }
+  if (await checkHere(cred, challenge)) { localUnlock = true; await load(); prefetchLogin(); return; } // offers an update once online
   showLock('Face ID didn\'t match. Try again.');
 }
 // Leaving the app for 5 minutes locks it, and ends its session on the server too
@@ -1642,7 +1676,8 @@ $('cName').oninput = () => { const v = $('cName').value.trim(); $('cHint').textC
 $('cOk').onclick = () => catAction($('cName').value.trim());
 $('cDel').onclick = () => { if (confirm(`Delete "${catFrom}"? Its payments move to Uncategorized.`)) catAction('Uncategorized'); };
 $('cCancel').onclick = () => $('catDlg').close();
-addEventListener('online', () => { if (loadedAt && authKey()) load(); });
+addEventListener('online', () => { if (loadedAt && authKey()) load(); else if (wantsLogin()) prefetchLogin(); });
+$('offline').onclick = () => { if (canUpdate()) unlock(); };
 $('mGoal').onclick = e => { if (e.target.closest('#mPlan')) openPlan(); };
 
 // ---------- savings plan sheet ----------
@@ -1688,6 +1723,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return; }
   if (passkey() && hiddenAt && Date.now() - hiddenAt > 5 * 60e3 && !$('app').hidden) return lockNow();
   if (loadedAt && authKey() && Date.now() - loadedAt > 60e3 && !document.querySelector('dialog[open]')) load();
+  else if (wantsLogin()) prefetchLogin();
 });
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js');
 load();
