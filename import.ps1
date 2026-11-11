@@ -25,7 +25,7 @@ foreach ($f in (Get-ChildItem "$old\rows_*.tsv" | Sort-Object Name | ForEach-Obj
   if ($type -match '^شراء انترنت|عملية شراء|خصم') { $chan='online' }
   if ($type -match 'دولي|الخليج') { $chan='intl' }
   if ($type -match 'إعادة|عكس') { $kind='refund' }
-  elseif ($type -match 'إيداع رواتب|حساب المواطن|مكافأة طلاب|من صاحب العمل' -or ($type -match '^حوالة محلية واردة' )) { $kind='income';$chan='bank';$cat='Income'; $m= if ($type -match 'المواطن') {'Citizen Account'} else {$d[1]} }
+  elseif ($type -match 'إيداع رواتب|إيداع راتب|حساب المواطن|مكافأة طلاب|من صاحب العمل' -or ($type -match '^حوالة محلية واردة' )) { $kind='income';$chan='bank';$cat='Income'; $m= if ($type -match 'المواطن') {'Citizen Account'} elseif ($type -match 'إيداع راتب') {'Salary'} else {$d[1]} }
   elseif ($type -match 'إيداع نقدي') { $kind='cash_in';$chan='atm';$cat='Cash deposit';$m='ATM cash deposit' }
   elseif ($type -match 'سحب نقدي') { $chan='atm';$cat='Cash withdrawal';$m='ATM cash withdrawal' }
   elseif ($type -match 'سداد') { $chan='bank';$m=$first }

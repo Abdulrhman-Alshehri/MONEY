@@ -92,9 +92,10 @@ def build(work, seq):
                 chan = 'intl'
             if match(typ, 'إعادة|عكس'):
                 kind = 'refund'
-            elif match(typ, 'إيداع رواتب|حساب المواطن|مكافأة طلاب|من صاحب العمل') or match(typ, '^حوالة محلية واردة'):
+            elif match(typ, 'إيداع رواتب|إيداع راتب|حساب المواطن|مكافأة طلاب|من صاحب العمل') or match(typ, '^حوالة محلية واردة'):
                 kind, chan, cat = 'income', 'bank', 'Income'
-                m_ = 'Citizen Account' if match(typ, 'المواطن') else at(1)
+                # إيداع راتب's second line is a reference number, not the payer
+                m_ = 'Citizen Account' if match(typ, 'المواطن') else 'Salary' if match(typ, 'إيداع راتب') else at(1)
             elif match(typ, 'إيداع نقدي'):
                 kind, chan, cat, m_ = 'cash_in', 'atm', 'Cash deposit', 'ATM cash deposit'
             elif match(typ, 'سحب نقدي'):

@@ -318,6 +318,7 @@ SMS has no dedupe, on purpose. Identical messages can be real: statements show t
 
 - Debit total and count, credit total and count, end balance must all match, with `breaks=0`.
 - After dedupe, the imported debits and credits must equal the sum across statements minus the overlap.
+- The last page can repeat the previous page's last rows exactly (6 rows in November 2026). The reader then reports a page-1 mismatch and a balance break on the last page. The repeats have identical refs, so the import drops them, and the rows without them must match page 1.
 
 ### Statement overlap
 
@@ -345,7 +346,7 @@ Matched against the Arabic type column in `import.ps1`. Order in the script matt
 | `خصم نهائي للتفويض عبر نقاط بيع`, `خصم جزئي...` | purchase | online | From MCC |
 | `شراء نقاط بيع دولي` | purchase | intl | From MCC |
 | `إعادة مبلغ نقاط بيع`, `إعادة شراء محلي...`, `عكس شراء...` | refund | keeps its method | By merchant, then MCC |
-| `إيداع رواتب`, `تحويل وارد - حساب المواطن`, `حوالة محلية واردة` | income | bank | Income |
+| `إيداع رواتب`, `إيداع راتب`, `تحويل وارد - حساب المواطن`, `حوالة محلية واردة` | income | bank | Income. `إيداع راتب` (the singular, first seen in November 2026) is named `Salary`: its second line is a reference number, not the payer |
 | `إيداع نقدي - صراف آلي` | cash_in | atm | Cash deposit |
 | `حوالة فورية محلية واردة`, `تحويل داخلي وارد` | transfer_in | transfer | Transfers |
 | Incoming transfer whose first description line starts `عكس` and mentions `نقاط بيع` (a card reversal paid back as a transfer) | refund | intl if `دولي` | Merchant `Card refund` |
