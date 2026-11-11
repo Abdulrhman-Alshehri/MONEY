@@ -34,7 +34,7 @@ function parse(t: string) {
   } else if (/حوالة|تحويل/.test(text)) {
     type = 'transfer';
     kind = isIn ? 'transfer_in' : 'transfer_out';
-    merchant = text.match(/\d{4}\*?\s*([^\d*]+?)\s*\d{2}\/\d{2}\/\d{2}/)?.[1]?.trim() ?? null;
+    merchant = text.match(/\d{4}\*?\s*([^\d*]+?)\s*\d{2}\/\d{2}\/\d{2}/)?.[1]?.trim() ?? text.match(/إلى\s*:?\s*(\*+\d{4})/)?.[1] ?? null;
   } else if (/رواتب|راتب/.test(text)) {
     type = 'bank'; kind = 'income'; merchant = 'Salary';
   } else if (/سحب\s*نقدي/.test(text)) {
@@ -151,6 +151,24 @@ async function matchSms(rows: any[]) {
     if (best) { out.set(r, best.id); free.splice(free.indexOf(best), 1); }
   }
   return out;
+}
+// Paying through the wallet sends two SMS within a minute or two: the bank's top-up (an online purchase your rules put in
+// Wallets & Finance) and the wallet's own message (it writes dates as yyyy-mm-dd), which says what was really paid. The
+// wallet's message counts and the top-up next to it is left out, with a note, in whichever order they arrive. A top-up
+// with no wallet message within 5 minutes stays counted, so a lost wallet SMS loses nothing.
+const TOPUP = 'Wallets & Finance', VIA_WALLET = 'Paid through your wallet', PAIR_GAP = 5 * 60e3;
+const fromWallet = (raw: unknown) => typeof raw === 'string' && /\d{4}-\d{2}-\d{2}/.test(raw);
+// deno-lint-ignore no-explicit-any
+const walletPaid = (p: any) => fromWallet(p.raw_text) && (p.kind === 'purchase' || p.kind === 'transfer_out');
+// deno-lint-ignore no-explicit-any
+const topUp = (p: any) => p.kind === 'purchase' && p.category === TOPUP && !fromWallet(p.raw_text);
+// SMS rows within 5 minutes of `at`
+async function nearby(at: string) {
+  const t = Date.parse(at);
+  const { data, error } = await db.from('payments').select('id,kind,category,excluded,note,raw_text,occurred_at').eq('source', 'sms')
+    .gte('occurred_at', new Date(t - PAIR_GAP).toISOString()).lte('occurred_at', new Date(t + PAIR_GAP).toISOString());
+  if (error) throw new Error(error.message);
+  return data ?? [];
 }
 // Runs of 5+ days with no payments at all that touch [from, to] (day numbers), clipped to it: totals there are incomplete.
 // Each run is measured in full, so the 4 empty days that start a month count when they end a longer gap.
@@ -1054,13 +1072,29 @@ async function handle(req: Request): Promise<Response> {
     if (!p.occurred_at) p.occurred_at = new Date(arrived).toISOString(); // no date in the message: when it arrived
     p.merchant = await aliasOf(p.merchant);
     const category = await categorize(p.kind, p.merchant);
+    // Wallet payments: the wallet's message counts, and the bank's top-up next to it doesn't
+    const wallet = walletPaid({ raw_text: raw, kind: p.kind }), top = topUp({ raw_text: raw, kind: p.kind, category });
+    // deno-lint-ignore no-explicit-any
+    let near: any[] = [], viaWallet = false;
+    if (wallet || top) { try { near = await nearby(p.occurred_at); } catch { /* matching never costs an SMS */ } }
+    if (top) { // the wallet's message came first: this top-up is left out if a wallet message nearby has no top-up yet
+      const paired = near.filter((r) => topUp(r) && r.excluded && String(r.note ?? '').includes(VIA_WALLET)).length;
+      viaWallet = near.filter(walletPaid).length > paired;
+    }
     // Unrecognised messages (e.g. promos containing SAR) are kept for review but never counted.
-    const { error } = await db.from('payments').insert({ raw_text: raw, source: 'sms', category, excluded: p.kind === 'unknown', sms_id: smsId, ...p });
+    const { error } = await db.from('payments').insert({ raw_text: raw, source: 'sms', category, excluded: p.kind === 'unknown' || viaWallet, sms_id: smsId, ...(viaWallet ? { note: VIA_WALLET } : {}), ...p });
     if (error && error.code === '23505' && smsId) return json({ ok: true, duplicate: true });
     if (error) return json({ error: error.message }, 500);
+    let leftOut = false;
+    if (wallet) { // the top-up came first: the nearest one still counted is left out now
+      const t = Date.parse(p.occurred_at);
+      const t0 = near.filter((r) => topUp(r) && !r.excluded).sort((a, b) => Math.abs(Date.parse(a.occurred_at) - t) - Math.abs(Date.parse(b.occurred_at) - t))[0];
+      if (t0) leftOut = !(await db.from('payments').update({ excluded: true, note: t0.note ? `${t0.note} · ${VIA_WALLET}` : VIA_WALLET }).eq('id', t0.id)).error;
+    }
     let s = null;
     try { s = await summarize(); } catch { /* the notice just leaves out the month total */ }
-    return json({ ok: true, category, ...p, notice: notice(p, category, s) });
+    const line = viaWallet ? `Wallet top-up ${p.amount == null ? '?' : exact(num(p.amount))} · left out: the wallet's own message counts` : notice(p, category, s) + (leftOut ? ' · its top-up is left out' : '');
+    return json({ ok: true, category, ...p, notice: line });
   }
   return json({ error: 'method' }, 405);
 }

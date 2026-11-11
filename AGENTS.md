@@ -74,6 +74,7 @@ Body: the SMS as plain text, or JSON with `text` or `message`. JSON may also car
 - New SMS go through your renames (`merchant_aliases`) before their category is chosen.
 - `notice` is one line for the Shortcut's notification, made by `notice()`: the payment, its category's total this month (from the summary's `categories`) with its limit if one is set ("Food & Cafes: 640 of 1,500 this month"), and all spending this month. Transfers, salary and savings get their own wording. It leaves out the totals if `summarize()` fails.
 
+- Wallet payments are paired with the bank's top-up (see the wallet's messages under "Message formats"): the notice ends "its top-up is left out", or, for a top-up saved left out, reads "Wallet top-up 33 · left out: the wallet's own message counts".
 - `400 {"error":"empty"}` for an empty body, which is what a manual Shortcut run sends.
 - `{"ok":true,"ignored":true}` for messages that look like login codes; nothing is stored.
 
@@ -296,7 +297,13 @@ A wallet (another provider) texts its own messages, which also contain `SAR`, wi
 حوالة صادرة داخلية المبلغ: 40.00 SAR إلى : **5555 2026-11-08 22:51
 ```
 
-They aren't on the bank account, so they never match a statement row. Each repeats a top-up the bank records as an online purchase (MCC 6012, `Wallets & Finance`) a few seconds earlier; see Known issues. An international purchase can also arrive without its type words or date (`بـ34.77 SAR من 1111* من SHOP بطاقة مدى *2222 في في المملكة المتحدة`, made up): it stays `unknown`.
+They aren't on the bank account, so they never match a statement row. Each comes with a top-up the bank texts as an online purchase that the user's rule puts in `Wallets & Finance` (MCC 6012 on statements). The SMS handler pairs them, in whichever order they arrive (`fromWallet()`, `topUp()`, `nearby()` in `index.ts`):
+
+- A wallet message (a purchase or an outgoing transfer, told apart by its `yyyy-mm-dd` date) leaves out the nearest top-up within 5 minutes that still counts: `excluded`, with the note `Paid through your wallet`.
+- A top-up that arrives when a wallet message within 5 minutes has no top-up yet is saved left out the same way.
+- The wallet's message counts, with its shop (after `لدى`) or its recipient (`**NNNN`, so "Use for all" can remember a recipient) and its real amount. Money already in the wallet is covered: top-up 50, wallet sends 72.
+- A top-up with no wallet message nearby stays counted, so a lost wallet SMS loses nothing. One made more than 5 minutes before paying isn't paired; see Known issues.
+- Statement imports don't pair: an imported top-up whose SMS never came would count next to the wallet's message. An international purchase can also arrive without its type words or date (`بـ34.77 SAR من 1111* من SHOP بطاقة مدى *2222 في في المملكة المتحدة`, made up): it stays `unknown`.
 
 - **Amount:** number before or after `SAR`.
 - **Merchant:** text after a `من` that isn't followed by a digit or `*`, up to `مدى`. Online purchases have two `من`; the first is the account. A wallet's Visa purchase names the shop after `لدى`.
@@ -593,7 +600,7 @@ After deploying, check the scheduled jobs on real data with `POST ?action=tick&f
 | Notifications show amounts | They can be read on the Lock Screen | iOS: Settings > Notifications > Spending > Show Previews: When Unlocked |
 | Alerts run hourly | A limit crossed at 14:10 is announced by 15:07; the SMS notice is instant | Fine for summaries and reminders |
 | Bills for reminders come from the app | A new fixed cost reaches the server only after the app is opened | Open the app now and then |
-| Wallet payments can count twice | A top-up from the bank (an online purchase in `Wallets & Finance`) and the wallet's own SMS for what it paid both count, once the wallet SMS is given a spending category | Give the top-up the purpose's category and delete the wallet SMS, or leave the wallet SMS out of totals |
+| A wallet top-up made in advance counts twice | Pairing only looks 5 minutes either side, so a top-up made earlier and the wallet payment later both count | Tick "Don't count this payment" on the top-up |
 | The first unlock after a quiet spell is slow | The function starts cold, so the lock screen reads Connecting… for 3–6 seconds | Platform limit; keeping it warm would need a ping every minute or two |
 | Instalments are matched by name and amount | A plan counts payments whose merchant or category contains the provider's name, within 1 riyal | Give the payment the provider's category, or set "Paid so far" on the plan |
 

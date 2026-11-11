@@ -169,6 +169,7 @@ Things to keep in mind:
 
 - Transfers to friends and family stay out of Spent unless you give them a category.
 - Payments you mark "Don't count this payment" count nowhere, but stay in the list.
+- **Wallet payments count once.** Paying through your wallet sends two SMS: the bank's top-up and the wallet's own message. The wallet's message counts (it names the shop and the real amount), and the top-up next to it is left out with the note "Paid through your wallet". If the wallet's message never arrives, the top-up still counts. A top-up made more than 5 minutes before paying isn't matched, so both count: tick "Don't count this payment" on the top-up.
 
 ## Set up from scratch
 
@@ -281,7 +282,7 @@ Change it in all three places:
 | Row missing from totals | `kind` is `unknown`, or it's excluded | Check the function's parsing and the payment's settings |
 | Same payment twice | A test message sent again | Tap it and delete it |
 | "No internet" or "SMS waiting" notifications | Spending SMS couldn't reach the server: no internet, or the key was refused | They're sent with the next SMS, or when you join Wi-Fi. If the key was refused, make a new SMS key and tap ▶ on Spending SMS › Change key |
-| A payment shows twice: a wallet top-up and the wallet's own message | Your wallet texts you too, and its message isn't on the bank statement | Give the top-up (Wallets & Finance) the right category and delete the wallet's message, or tick "Don't count this payment" on the wallet's message |
+| A payment shows twice: a wallet top-up and the wallet's own message | The top-up came more than 5 minutes before the wallet payment, so they weren't matched | Tick "Don't count this payment" on the top-up |
 | "Spending SMS stopped: …" | An unexpected error in the script | The SMS is normally saved already: tap ▶ on Spending SMS to see what's waiting, and report the message |
 | Old dashboard after an update | Netlify isn't updated, or the old page is still open | Check the Deploys page, then fully close and reopen the app |
 | Dashboard keeps asking for the token | Wrong or changed token | Enter the current token |
