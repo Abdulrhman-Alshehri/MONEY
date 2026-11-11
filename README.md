@@ -281,6 +281,7 @@ Change it in all three places:
 | Row missing from totals | `kind` is `unknown`, or it's excluded | Check the function's parsing and the payment's settings |
 | Same payment twice | A test message sent again | Tap it and delete it |
 | "No internet" or "SMS waiting" notifications | Spending SMS couldn't reach the server: no internet, or the key was refused | They're sent with the next SMS, or when you join Wi-Fi. If the key was refused, make a new SMS key and tap ▶ on Spending SMS › Change key |
+| A payment shows twice: a wallet top-up and the wallet's own message | Your wallet texts you too, and its message isn't on the bank statement | Give the top-up (Wallets & Finance) the right category and delete the wallet's message, or tick "Don't count this payment" on the wallet's message |
 | "Spending SMS stopped: …" | An unexpected error in the script | The SMS is normally saved already: tap ▶ on Spending SMS to see what's waiting, and report the message |
 | Old dashboard after an update | Netlify isn't updated, or the old page is still open | Check the Deploys page, then fully close and reopen the app |
 | Dashboard keeps asking for the token | Wrong or changed token | Enter the current token |

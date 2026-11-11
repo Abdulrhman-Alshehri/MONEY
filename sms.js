@@ -94,7 +94,7 @@ async function run(param, { all = false } = {}) {
   const text = smsText(param);
   let current = null, unsaved = false;
   if (text.trim()) {
-    try { current = save(text); } catch (e) { current = { id: newId(new Date()), text }; unsaved = true; } // still sent, as before the queue
+    try { current = save(text); } catch (e) { current = { id: newId(new Date()), text, at: new Date().toISOString() }; unsaved = true; } // still sent, as before the queue
   }
   const key = readKey(), start = Date.now(), lines = [];
   let notice = '', earlier = 0, problem = null, late = false, gotCurrent = false;
@@ -110,7 +110,7 @@ async function run(param, { all = false } = {}) {
         if (!item) { try { fm.move(job.file, job.file.replace(/\.json$/, '.bad')); } catch (e) { /* gone */ } continue; }
         if (!all && Date.now() - Date.parse(item.at) < YOUNG) continue;
       }
-      const o = outcome(await post({ text: item.text, id: item.id }, key));
+      const o = outcome(await post({ text: item.text, id: item.id, at: item.at }, key)); // at: when it arrived, for an SMS without a date
       if (o.done) {
         if (job.file) forget(job.file);
         if (job.item) { notice = o.notice; gotCurrent = true; } else earlier++;

@@ -65,7 +65,7 @@ Every request but the two Face ID unlock calls needs `x-api-key`, checked by `au
 
 ### POST (no query): ingest an SMS
 
-Body: the SMS as plain text, or JSON with `text` or `message`. JSON may also carry an `id` (letters, digits, `_ . : -`, up to 100): `sms.js`, which queues SMS while offline, sends one, and a repeated `id` returns `{"ok":true,"duplicate":true}` without saving or a notice, so retries are safe. Without an `id`, identical SMS are all kept, since they can be real.
+Body: the SMS as plain text, or JSON with `text` or `message`. JSON may also carry an `id` (letters, digits, `_ . : -`, up to 100): `sms.js`, which queues SMS while offline, sends one, and a repeated `id` returns `{"ok":true,"duplicate":true}` without saving or a notice, so retries are safe. Without an `id`, identical SMS are all kept, since they can be real. It may also carry `at`, the ISO time the queue saved it: an SMS whose text has no date is placed at `at` (if within the last 60 days and not ahead of now), else at the time the server got it, so no row is saved without a date.
 
 ```json
 {"ok":true,"category":"Transport","amount":16.75,"type":"online","kind":"purchase","merchant":"Jeeny","occurred_at":"2026-11-05T09:30:00+03:00","notice":"Jeeny 16.75 · Transport: 410 this month · 3,240 total"}
@@ -162,6 +162,10 @@ Called by `pg_cron` every hour with the `cron` key; see "Scheduled jobs and noti
 ### GET ?action=status
 
 `{"last_backup":{"at":"...","file":"2026-11-26.json.gz","payments":1520,"bytes":96000},"devices":1}` for the Months page.
+
+### POST ?action=restore: put back deleted payments
+
+`{"file":"2026-11-07.json.gz","ids":["uuid", ...],"dry":true}` (full access, up to 50 ids). Reads that backup on the server and inserts the listed payments that are no longer in `payments`, exactly as they were (id, ref, seq, balance, text). Nothing from the backup is returned: `dry` answers `{"ok":true,"found":n,"missing":[{id, occurred_at, amount, kind, category, source, seq}]}`, and a real run `{"ok":true,"restored":[...]}`. A deleted payment's id is in the function logs (the `DELETE ?id=` request). A payment deleted before the backup was made isn't in it.
 
 ### PUT ?action=bills
 
@@ -285,9 +289,18 @@ Logical text with line breaks flattened. The phone can display these differently
 حوالة واردة راتب مبلغ SAR 9000 حساب5555* في 27/11/26 08:00
 ```
 
+A wallet (another provider) texts its own messages, which also contain `SAR`, with `yyyy-mm-dd` dates. Made-up examples:
+
+```
+شراء إنترنت فيزا12 USD (75.10 SAR) رصيد3.20 لدىSAMPLE.APP 2026-11-06 14:13
+حوالة صادرة داخلية المبلغ: 40.00 SAR إلى : **5555 2026-11-08 22:51
+```
+
+They aren't on the bank account, so they never match a statement row. Each repeats a top-up the bank records as an online purchase (MCC 6012, `Wallets & Finance`) a few seconds earlier; see Known issues. An international purchase can also arrive without its type words or date (`بـ34.77 SAR من 1111* من SHOP بطاقة مدى *2222 في في المملكة المتحدة`, made up): it stays `unknown`.
+
 - **Amount:** number before or after `SAR`.
-- **Merchant:** text after a `من` that isn't followed by a digit or `*`, up to `مدى`. Online purchases have two `من`; the first is the account.
-- **Date:** `dd/mm/yy` with `hh:mm` on either side. Treated as Riyadh time.
+- **Merchant:** text after a `من` that isn't followed by a digit or `*`, up to `مدى`. Online purchases have two `من`; the first is the account. A wallet's Visa purchase names the shop after `لدى`.
+- **Date:** `dd/mm/yy`, or `yyyy-mm-dd` in a wallet's messages, with `hh:mm` on either side. Treated as Riyadh time. Without one, the time the SMS arrived (see `at` above).
 - SMS line endings are `\r\n`.
 
 ### Category order
@@ -450,7 +463,7 @@ Compiling `Stmt.cs` with `Add-Type` limits it to C# 5 syntax. Scripts need a UTF
 
 ### Backups
 
-Every Thursday morning `backup()` saves `payments` (with `raw_text`), `merchant_rules`, `merchant_aliases`, `category_limits`, `bills` and `bnpl_plans` as one gzipped JSON file, `backups/YYYY-MM-DD.json.gz`, and deletes all but the newest 12. Keys, push devices, settings and the alert log are left out on purpose. To restore, download the file from Storage in the Supabase dashboard: it holds one array of rows per table, to insert with SQL. Ask the user before restoring over live data.
+Every Thursday morning `backup()` saves `payments` (with `raw_text`), `merchant_rules`, `merchant_aliases`, `category_limits`, `bills` and `bnpl_plans` as one gzipped JSON file, `backups/YYYY-MM-DD.json.gz`, and deletes all but the newest 12. Keys, push devices, settings and the alert log are left out on purpose. To put back payments deleted since a backup, use `POST ?action=restore` (dry run first). To restore more, download the file from Storage in the Supabase dashboard: it holds one array of rows per table, to insert with SQL. Ask the user before restoring over live data.
 
 ## Frontend
 
@@ -528,7 +541,7 @@ On `localhost`, `API` becomes `/api`, so you can test without touching real data
 
 ### SMS queue
 
-`sms.js` runs in Scriptable, called by the SMS automation's Run Script action with the message as `args.shortcutParameter` (text, a dictionary with `text`, or a list are all read). It writes the SMS to `spending-sms/queue/<id>.json` under `FileManager.local()` (on the phone, never iCloud), as a `.tmp` file renamed into place so a file is never half written. Then it posts `{text, id}` and deletes the file on any `ok` answer, including `duplicate` and an ignored login code. The `id` is `sms-<yyyyMMdd-HHmmss>-<8 hex>`, so names sort by time; the server keeps each `id` once. The notification text goes back with `Script.setShortcutOutput()`: the server's `notice`, plus a line for anything that waited.
+`sms.js` runs in Scriptable, called by the SMS automation's Run Script action with the message as `args.shortcutParameter` (text, a dictionary with `text`, or a list are all read). It writes the SMS to `spending-sms/queue/<id>.json` under `FileManager.local()` (on the phone, never iCloud), as a `.tmp` file renamed into place so a file is never half written. Then it posts `{text, id, at}` (`at`: when it was saved, so an SMS without a date keeps its time when sent later) and deletes the file on any `ok` answer, including `duplicate` and an ignored login code. The `id` is `sms-<yyyyMMdd-HHmmss>-<8 hex>`, so names sort by time; the server keeps each `id` once. The notification text goes back with `Script.setShortcutOutput()`: the server's `notice`, plus a line for anything that waited.
 
 - The new SMS goes first, then older ones, oldest first. A file another run saved in the last minute is left to that run, so its notice isn't lost (Send now in the app sends everything).
 - No connection, 401, 403, 429 or 5xx keeps the file and stops the run, since the rest would fail the same way. Another 4xx keeps that file and moves on. An unreadable file is renamed `.bad` and only reported in the app.
@@ -580,6 +593,7 @@ After deploying, check the scheduled jobs on real data with `POST ?action=tick&f
 | Notifications show amounts | They can be read on the Lock Screen | iOS: Settings > Notifications > Spending > Show Previews: When Unlocked |
 | Alerts run hourly | A limit crossed at 14:10 is announced by 15:07; the SMS notice is instant | Fine for summaries and reminders |
 | Bills for reminders come from the app | A new fixed cost reaches the server only after the app is opened | Open the app now and then |
+| Wallet payments can count twice | A top-up from the bank (an online purchase in `Wallets & Finance`) and the wallet's own SMS for what it paid both count, once the wallet SMS is given a spending category | Give the top-up the purpose's category and delete the wallet SMS, or leave the wallet SMS out of totals |
 | The first unlock after a quiet spell is slow | The function starts cold, so the lock screen reads Connecting… for 3–6 seconds | Platform limit; keeping it warm would need a ping every minute or two |
 | Instalments are matched by name and amount | A plan counts payments whose merchant or category contains the provider's name, within 1 riyal | Give the payment the provider's category, or set "Paid so far" on the plan |
 

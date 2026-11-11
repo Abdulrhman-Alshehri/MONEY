@@ -49,7 +49,7 @@ function parse(t: string) {
   } else if (/شراء|خصم|سداد/.test(text)) {
     type = text.includes('POS') ? 'pos' : /دولي/.test(text) ? 'intl' : 'online';
     kind = 'purchase';
-    merchant = text.match(/من\s+(?![*\d])(.+?)\s*مدى/)?.[1]?.trim() ?? null;
+    merchant = text.match(/من\s+(?![*\d])(.+?)\s*مدى/)?.[1]?.trim() ?? text.match(/لدى\s*(.+?)\s*\d{4}-\d{2}-\d{2}/)?.[1]?.trim() ?? null;
   }
   let occurred_at: string | null = null;
   const d = text.match(/(\d{2}):(\d{2})\s+(\d{2})\/(\d{2})\/(\d{2})/);
@@ -57,6 +57,10 @@ function parse(t: string) {
   else {
     const e = text.match(/(\d{2})\/(\d{2})\/(\d{2})\s+(\d{2}):(\d{2})/);
     if (e) occurred_at = `20${e[3]}-${e[2]}-${e[1]}T${e[4]}:${e[5]}:00+03:00`;
+  }
+  if (!occurred_at) { // a wallet's messages: 2026-11-08 22:51
+    const f = text.match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})/) ?? text.match(/(\d{2}):(\d{2})\s+(\d{4})-(\d{2})-(\d{2})/);
+    if (f) occurred_at = f[1].length === 4 ? `${f[1]}-${f[2]}-${f[3]}T${f[4]}:${f[5]}:00+03:00` : `${f[3]}-${f[4]}-${f[5]}T${f[1]}:${f[2]}:00+03:00`;
   }
   return { amount, type, kind, merchant, occurred_at, city };
 }
@@ -827,6 +831,29 @@ async function handle(req: Request): Promise<Response> {
     const [b, d] = await Promise.all([db.from('app_settings').select('value').eq('key', 'last_backup').maybeSingle(), db.from('push_subscriptions').select('endpoint', { count: 'exact', head: true })]);
     return json({ last_backup: b.data?.value ?? null, devices: d.count ?? 0 });
   }
+  // Puts back payments deleted since a backup, by id, exactly as they were. Nothing from the backup leaves the server:
+  // `dry` lists what would come back, without text or names.
+  if (req.method === 'POST' && action === 'restore') {
+    const b = await req.json();
+    const file = String(b?.file ?? ''), ids: string[] = Array.isArray(b?.ids) ? b.ids.map(String).slice(0, 50) : [];
+    if (!/^\d{4}-\d\d-\d\d\.json\.gz$/.test(file) || !ids.length) return json({ error: 'file and ids' }, 400);
+    const { data: blob, error } = await db.storage.from('backups').download(file);
+    if (error || !blob) return json({ error: 'no such backup' }, 404);
+    const dump = JSON.parse(await new Response(blob.stream().pipeThrough(new DecompressionStream('gzip'))).text());
+    // deno-lint-ignore no-explicit-any
+    const rows = (dump.payments ?? []).filter((p: any) => ids.includes(String(p.id)));
+    // deno-lint-ignore no-explicit-any
+    const { data: have, error: e1 } = rows.length ? await db.from('payments').select('id').in('id', rows.map((p: any) => p.id)) : { data: [], error: null };
+    if (e1) return json({ error: e1.message }, 500);
+    // deno-lint-ignore no-explicit-any
+    const missing = rows.filter((p: any) => !(have ?? []).some((h: any) => h.id === p.id));
+    // deno-lint-ignore no-explicit-any
+    const show = missing.map((p: any) => ({ id: p.id, occurred_at: p.occurred_at, amount: p.amount, kind: p.kind, category: p.category, source: p.source, seq: p.seq }));
+    if (b.dry || !missing.length) return json({ ok: true, found: rows.length, missing: show });
+    const { error: e2 } = await db.from('payments').insert(missing);
+    if (e2) return json({ error: e2.message }, 500);
+    return json({ ok: true, restored: show });
+  }
   // The bills the app found (its fixed costs), sent whole whenever they change, for the reminders
   if (req.method === 'PUT' && action === 'bills') {
     const list = await req.json();
@@ -1011,16 +1038,20 @@ async function handle(req: Request): Promise<Response> {
 
   if (req.method === 'POST') {
     const body = await req.text();
-    let raw = body, smsId: string | null = null;
+    let raw = body, smsId: string | null = null, arrived = Date.now();
     try {
       const j = JSON.parse(body);
       raw = String(j.text ?? j.message ?? body);
       // An id from a Shortcut that queues SMS while offline: the same id sent again is ignored, so retries are safe
       if (typeof j.id === 'string' && /^[\w.:-]{1,100}$/.test(j.id)) smsId = j.id;
+      // When the queue saved it, for an SMS without a date of its own: within the last 60 days, not ahead of now
+      const at = Date.parse(String(j.at ?? ''));
+      if (Number.isFinite(at) && at <= Date.now() + 5 * 60e3 && at > Date.now() - 60 * DAY) arrived = Math.min(at, Date.now());
     } catch { /* plain text */ }
     if (!raw.trim()) return json({ error: 'empty' }, 400);
     const p = parse(raw);
     if (!p) return json({ ok: true, ignored: true });
+    if (!p.occurred_at) p.occurred_at = new Date(arrived).toISOString(); // no date in the message: when it arrived
     p.merchant = await aliasOf(p.merchant);
     const category = await categorize(p.kind, p.merchant);
     // Unrecognised messages (e.g. promos containing SAR) are kept for review but never counted.
